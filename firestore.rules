@@ -1,0 +1,413 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TrustyDr Ecosystem — Firestore Security Rules
+// Firebase project: doctorapp-7e8b3
+//
+// Surfaces covered:
+//   • TrustyDr-pwa     — patient app (Flutter)
+//   • doctor_portal    — doctor scheduling + center reception board (Flutter)
+//   • mydoctor_admin   — global super-admin portal (Flutter)
+//   • doctor_functions — Cloud Functions (Node.js / Admin SDK, bypasses rules)
+//
+// Role model:
+//   "admin"  → users/{uid}.role == "admin"  (super-admin, set via set_admin_claim.js)
+//   doctor   → doctors/{uid} document exists (uid == Firebase Auth UID)
+//   patient  → authenticated user who is not a doctor
+//   center staff → medical_centers/{centerId}/members/{uid} exists
+//
+// ═══════════════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // HELPER FUNCTIONS
+    // ───────────────────────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Super-admin: users/{uid}.role == "admin"
+    // Costs 1 document read per rule evaluation.
+    function isAdmin() {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+
+    // Doctor: a doctors/{uid} document exists for the caller.
+    // Costs 1 exists() check per rule evaluation.
+    function isDoctor() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/doctors/$(request.auth.uid));
+    }
+
+    // Center staff: caller has a member doc in the given center.
+    function isCenterMember(centerId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/medical_centers/$(centerId)/members/$(request.auth.uid));
+    }
+
+    // Center owner: caller's uid matches the center's ownerId field.
+    function isCenterOwner(centerId) {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/medical_centers/$(centerId)).data.ownerId == request.auth.uid;
+    }
+
+    // Fields on doctors/{uid} that only Cloud Functions / admin may write.
+    // Doctors cannot self-escalate their subscription or verification status.
+    function touchesDoctorAdminFields() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'isPaidUser', 'subscriptionStatus', 'subscriptionPlan',
+        'nextBillingDate', 'trialStart', 'trialEnds',
+        'isActive', 'isVerified', 'verificationStatus',
+        'canBook', 'canCall', 'status'
+      ]);
+    }
+
+    // Core identity fields on an appointment that must never change after creation.
+    function appointmentCoreUnchanged() {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'patientId', 'doctorId', 'centerId', 'source',
+        'bookedByUserId', 'bookedByRole', 'appointmentAt',
+        'dateKey', 'slotId', 'createdAt'
+      ]);
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // REFERENCE DATA  (public read — cities, provinces, specialties)
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /specialties/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /provinces/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /cities/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // users/{uid}
+    //
+    // Read:   own doc, admin (patient_directory), or doctor (phone search)
+    // Create: own doc only; cannot self-assign "admin" role
+    // Update: own doc (cannot escalate to admin); admin unrestricted
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /users/{uid} {
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid
+            || isAdmin()
+            || isDoctor());
+
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && (!request.resource.data.keys().hasAny(['role'])
+            || request.resource.data.role != 'admin');
+
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && request.auth.uid == uid
+            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])
+                || request.resource.data.role != 'admin'));
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // doctors/{uid}
+    //
+    // Read:   any authenticated user (public profiles)
+    // Create: doctor self-registration (uid must match)
+    // Update: doctor updates own profile fields; admin updates any field
+    //         Protected fields (touchesDoctorAdminFields): only admin / Cloud Functions
+    //
+    // Subcollection: doctors/{uid}/reviews
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /doctors/{uid} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.auth.uid == uid;
+
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && request.auth.uid == uid
+            && !touchesDoctorAdminFields());
+
+
+      // ── doctors/{uid}/reviews ──────────────────────────────────────────
+      // Patients (non-doctors) may create one review per visit.
+      // Reviews are immutable after creation (update/delete = admin only).
+      match /reviews/{reviewId} {
+        allow read: if true;
+
+        allow create: if isSignedIn()
+          && !isDoctor()
+          && request.resource.data.userId == request.auth.uid;
+
+        allow update, delete: if isAdmin();
+      }
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // schedules/{scheduleId}
+    //
+    // Read:   published schedules (patient app) OR own schedules (doctor portal)
+    // Create: doctor only; doctorId field must match caller's uid
+    // Update: doctor who owns the schedule
+    // Delete: owning doctor or admin
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /schedules/{scheduleId} {
+      allow read: if isSignedIn()
+        && (resource.data.status == 'published'
+            || resource.data.doctorId == request.auth.uid
+            || isAdmin());
+
+      allow create: if isDoctor()
+        && request.resource.data.doctorId == request.auth.uid;
+
+      allow update: if isDoctor()
+        && resource.data.doctorId == request.auth.uid;
+
+      allow delete: if (isDoctor() && resource.data.doctorId == request.auth.uid)
+        || isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // appointments/{appointmentId}
+    //
+    // CREATE — two paths:
+    //   Path A: patient self-booking (patient app)
+    //   Path B: center staff / doctor booking walk-in or follow-up (doctor portal)
+    //
+    // READ:  patient (own), doctor (own), center staff, admin
+    //
+    // UPDATE — three roles with different field permissions:
+    //   Doctor   → any non-core field (status, visitStatus, paymentStatus, notes…)
+    //   Center staff → visitStatus, paymentStatus, status, notes, timestamps
+    //   Patient  → status:'cancelled' + cancelledAt only
+    //   Admin    → unrestricted
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /appointments/{appointmentId} {
+
+      allow read: if isSignedIn()
+        && (resource == null
+            || resource.data.patientId == request.auth.uid
+            || resource.data.doctorId == request.auth.uid
+            || isCenterMember(resource.data.centerId)
+            || isAdmin());
+
+      // ── Path A: patient self-booking ──────────────────────────────────
+      allow create: if isSignedIn()
+        && request.resource.data.source == 'patient_app'
+        && request.resource.data.patientId == request.auth.uid
+        && request.resource.data.bookedByUserId == request.auth.uid
+        && request.resource.data.bookedByRole == 'patient'
+        && request.resource.data.status == 'pending'
+        && request.resource.data.paymentStatus == 'unpaid'
+        && request.resource.data.visitStatus == 'waiting';
+
+      // ── Path B: center staff / doctor walk-in or follow-up booking ────
+      allow create: if isSignedIn()
+        && request.resource.data.source in ['walk_in', 'reception', 'doctor_followup']
+        && request.resource.data.bookedByUserId == request.auth.uid
+        && isCenterMember(request.resource.data.centerId)
+        && request.resource.data.status in ['pending', 'confirmed']
+        && request.resource.data.paymentStatus == 'unpaid'
+        && request.resource.data.visitStatus == 'waiting';
+
+      // ── Doctor: update own appointment (status, visitStatus, paymentStatus, notes) ─
+      allow update: if isSignedIn()
+        && resource.data.doctorId == request.auth.uid
+        && appointmentCoreUnchanged();
+
+      // ── Center staff: restricted field update (reception board) ───────
+      allow update: if isSignedIn()
+        && isCenterMember(resource.data.centerId)
+        && appointmentCoreUnchanged()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'visitStatus', 'paymentStatus', 'status', 'notes',
+             'updatedAt', 'confirmedAt', 'cancelledAt', 'completedAt'
+           ]);
+
+      // ── Patient: cancel own appointment only ──────────────────────────
+      allow update: if isSignedIn()
+        && resource.data.patientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'status', 'cancelledAt', 'updatedAt'
+           ])
+        && request.resource.data.status == 'cancelled';
+
+      // ── Admin: full update access ──────────────────────────────────────
+      allow update: if isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // medical_centers/{centerId}
+    //
+    // Read:   any authenticated user
+    // Create: doctor only; ownerId must match caller; billing fields allowed on
+    //         initial creation (doctor sets subscriptionStatus, trialStart, etc.)
+    // Update: center owner may update profile fields BUT NOT billing/subscription
+    //         fields (those are admin-only to prevent self-upgrade fraud).
+    //         Admin may update any field (subscription activation on payment).
+    //
+    // Subcollection: medical_centers/{centerId}/members/{uid}
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /medical_centers/{centerId} {
+      allow read: if isSignedIn();
+
+      // Billing fields permitted on creation (doctor sets up initial trial).
+      // These same fields are blocked from updates by the owner below.
+      allow create: if isDoctor()
+        && request.resource.data.ownerId == request.auth.uid;
+
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && resource.data.ownerId == request.auth.uid
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                 'subscriptionStatus', 'centerStatus',
+                 'trialStart', 'trialEnds',
+                 'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
+                 'currentPlan', 'billingCycle', 'paymentProvider',
+                 'subscriptionVersion', 'lastPaymentAt', 'ownerId'
+               ]));
+
+
+      // ── medical_centers/{centerId}/members/{uid} ───────────────────────
+      // Read:  center members, the center owner, or admin
+      // Write: center owner or admin only (prevents doctors self-joining)
+      match /members/{memberId} {
+        allow read: if isSignedIn()
+          && (isCenterMember(centerId)
+              || isCenterOwner(centerId)
+              || isAdmin());
+
+        allow write: if isCenterOwner(centerId) || isAdmin();
+      }
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // payments/{paymentId}
+    //
+    // Read:   own payment (userId match) or admin
+    // Create: authenticated user for their own payment (initiating subscription)
+    // Update: admin only — Cloud Functions use Admin SDK and bypass rules
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /payments/{paymentId} {
+      allow read: if isSignedIn()
+        && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+
+      allow update: if isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // center_join_requests/{requestId}
+    //
+    // Doc ID pattern: '{centerId}_{doctorId}'
+    // Read:   the requesting doctor, the center owner, or admin
+    // Create: doctor only; doctorId must match caller; initial status must be 'pending'
+    // Update: center owner or admin (to approve / reject)
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /center_join_requests/{requestId} {
+      allow read: if isSignedIn()
+        && (resource.data.doctorId == request.auth.uid
+            || isCenterOwner(resource.data.centerId)
+            || isAdmin());
+
+      allow create: if isDoctor()
+        && request.resource.data.doctorId == request.auth.uid
+        && request.resource.data.status == 'pending';
+
+      allow update: if isCenterOwner(resource.data.centerId) || isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // shiftTemplates/{templateId}
+    //
+    // Doctor portal only. Each template belongs to one doctor (doctorId field).
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /shiftTemplates/{templateId} {
+      allow read: if isDoctor()
+        && resource.data.doctorId == request.auth.uid;
+
+      allow create: if isDoctor()
+        && request.resource.data.doctorId == request.auth.uid;
+
+      allow update, delete: if isDoctor()
+        && resource.data.doctorId == request.auth.uid;
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // External import collections  (admin read only)
+    // Used by mydoctor_admin for the doctor import workflow.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /google_doctors/{id} {
+      allow read: if isAdmin();
+    }
+
+    match /facebook_doctors/{id} {
+      allow read: if isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Collection group: members
+    //
+    // Authorizes collectionGroup('members').where('uid', isEqualTo: uid)
+    // queries fired on startup to resolve staff identity.
+    // A user may only read member documents where uid == their own auth uid.
+    // Write access is not granted here — governed by the nested rule only.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /{path=**}/members/{memberId} {
+      allow read: if isSignedIn()
+        && resource.data.uid == request.auth.uid;
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Intentionally unmatched collections (implicit deny):
+    //
+    //   patients   — doctor portal uses 'users', not 'patients'. If this
+    //                collection contains data, it is inaccessible from clients.
+    //
+    //   slotUsage  — purpose unclear; add an explicit rule before opening.
+    //
+    // OPEN SECURITY NOTE (blocker #9, not fixable via Firestore rules):
+    //   zaincashCallback HTTP Cloud Function has no Firebase Auth check.
+    //   It relies on ZainCash JWT verification only. Before going to
+    //   production, add HMAC signature verification or an IP allowlist.
+    // ───────────────────────────────────────────────────────────────────────
+
+  }
+}

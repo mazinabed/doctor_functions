@@ -1,0 +1,611 @@
+{
+  "cities": {
+    "al_anbar": {
+      "name_en": "Al Anbar",
+      "lang": {
+        "ar": "الأنبار"
+      },
+      "subCities": [
+        {
+          "en": "Ramadi",
+          "ar": "الرمادي"
+        },
+        {
+          "en": "Fallujah",
+          "ar": "الفلوجة"
+        },
+        {
+          "en": "Hit",
+          "ar": "هيت"
+        },
+        {
+          "en": "Haditha",
+          "ar": "حديثة"
+        },
+        {
+          "en": "Rutba",
+          "ar": "الرطبة"
+        },
+        {
+          "en": "Al-Qa'im",
+          "ar": "القائم"
+        },
+        {
+          "en": "Rawah",
+          "ar": "راوة"
+        },
+        {
+          "en": "Anah",
+          "ar": "عانة"
+        }
+      ]
+    },
+    "babil": {
+      "name_en": "Babil",
+      "lang": {
+        "ar": "بابل"
+      },
+      "subCities": [
+        {
+          "en": "Hillah",
+          "ar": "الحلة"
+        },
+        {
+          "en": "Al-Musayab",
+          "ar": "المسيب"
+        },
+        {
+          "en": "Al-Mahawil",
+          "ar": "المحاويل"
+        },
+        {
+          "en": "Hashimiya",
+          "ar": "الهاشمية"
+        }
+      ]
+    },
+    "baghdad": {
+      "name_en": "Baghdad",
+      "lang": {
+        "ar": "بغداد"
+      },
+      "subCities": [
+        {
+          "en": "Karrada",
+          "ar": "الكرادة"
+        },
+        {
+          "en": "Adhamiyah",
+          "ar": "الاعظمية"
+        },
+        {
+          "en": "Kadhimiya",
+          "ar": "الكاظمية"
+        },
+        {
+          "en": "Mansour",
+          "ar": "المنصور"
+        },
+        {
+          "en": "Dora",
+          "ar": "الدورة"
+        },
+        {
+          "en": "Sadr City",
+          "ar": "مدينة الصدر"
+        },
+        {
+          "en": "New Baghdad (9 Nissan)",
+          "ar": "بغداد الجديدة"
+        },
+        {
+          "en": "Rusafa",
+          "ar": "الرصافة"
+        },
+        {
+          "en": "Zayouna",
+          "ar": "زيونة"
+        }
+      ]
+    },
+    "basra": {
+      "name_en": "Basra",
+      "lang": {
+        "ar": "البصرة"
+      },
+      "subCities": [
+        {
+          "en": "Basra City",
+          "ar": "مدينة البصرة"
+        },
+        {
+          "en": "Al-Zubair",
+          "ar": "الزبير"
+        },
+        {
+          "en": "Al-Qurna",
+          "ar": "القرنة"
+        },
+        {
+          "en": "Shatt Al-Arab (Haritha)",
+          "ar": "شط العرب"
+        },
+        {
+          "en": "Abu Al-Khasib",
+          "ar": "أبو الخصيب"
+        },
+        {
+          "en": "Al-Faw",
+          "ar": "الفاو"
+        },
+        {
+          "en": "Al-Midaina",
+          "ar": "المدينة"
+        },
+        {
+          "en": "Umm Qasr",
+          "ar": "أم قصر"
+        },
+        {
+          "en": "Safwan",
+          "ar": "صفوان"
+        }
+      ]
+    },
+    "dhi_qar": {
+      "name_en": "Dhi Qar",
+      "lang": {
+        "ar": "ذي قار"
+      },
+      "subCities": [
+        {
+          "en": "Nasiriyah",
+          "ar": "الناصرية"
+        },
+        {
+          "en": "Shatra",
+          "ar": "الشطرة"
+        },
+        {
+          "en": "Suq Al-Shuyukh",
+          "ar": "سوق الشيوخ"
+        },
+        {
+          "en": "Rifa'i",
+          "ar": "الرفاعي"
+        },
+        {
+          "en": "Chibayish",
+          "ar": "الجبايش"
+        }
+      ]
+    },
+    "diyala": {
+      "name_en": "Diyala",
+      "lang": {
+        "ar": "ديالى"
+      },
+      "subCities": [
+        {
+          "en": "Baqubah",
+          "ar": "بعقوبة"
+        },
+        {
+          "en": "Khalis",
+          "ar": "الخالص"
+        },
+        {
+          "en": "Muqdadiyah",
+          "ar": "المقدادية"
+        },
+        {
+          "en": "Balad Ruz",
+          "ar": "بلدروز"
+        },
+        {
+          "en": "Khanaqin",
+          "ar": "خانقين"
+        },
+        {
+          "en": "Mandali",
+          "ar": "مندلي"
+        }
+      ]
+    },
+    "karbala": {
+      "name_en": "Karbala",
+      "lang": {
+        "ar": "كربلاء"
+      },
+      "subCities": [
+        {
+          "en": "Karbala City",
+          "ar": "مدينة كربلاء"
+        },
+        {
+          "en": "Al-Hindiya",
+          "ar": "الهندية"
+        },
+        {
+          "en": "Ain al-Tamur",
+          "ar": "عين التمر"
+        }
+      ]
+    },
+    "kirkuk": {
+      "name_en": "Kirkuk",
+      "lang": {
+        "ar": "كركوك",
+        "ku": "کەرکوک"
+      },
+      "subCities": [
+        {
+          "en": "Kirkuk City",
+          "ar": "مدينة كركوك",
+          "ku": "کەرکوک"
+        },
+        {
+          "en": "Hawija",
+          "ar": "الحويجة",
+          "ku": "حەویجە"
+        },
+        {
+          "en": "Daquq",
+          "ar": "داقوق",
+          "ku": "داقووق"
+        },
+        {
+          "en": "Dibis",
+          "ar": "الدبس",
+          "ku": "دیبس"
+        }
+      ]
+    },
+    "maysan": {
+      "name_en": "Maysan",
+      "lang": {
+        "ar": "ميسان"
+      },
+      "subCities": [
+        {
+          "en": "Amarah",
+          "ar": "العمارة"
+        },
+        {
+          "en": "Kumait",
+          "ar": "كميت"
+        },
+        {
+          "en": "Ali al-Gharbi",
+          "ar": "علي الغربي"
+        },
+        {
+          "en": "Qalat Saleh",
+          "ar": "قلعة صالح"
+        },
+        {
+          "en": "Majar al-Kabir",
+          "ar": "مجر الكبير"
+        }
+      ]
+    },
+    "muthanna": {
+      "name_en": "Muthanna",
+      "lang": {
+        "ar": "المثنى"
+      },
+      "subCities": [
+        {
+          "en": "Samawah",
+          "ar": "السماوة"
+        },
+        {
+          "en": "Rumaitha",
+          "ar": "الرميثة"
+        },
+        {
+          "en": "Al-Khidhir",
+          "ar": "الخضر"
+        },
+        {
+          "en": "Al-Salman",
+          "ar": "السلمان"
+        }
+      ]
+    },
+    "najaf": {
+      "name_en": "Najaf",
+      "lang": {
+        "ar": "النجف"
+      },
+      "subCities": [
+        {
+          "en": "Najaf City",
+          "ar": "مدينة النجف"
+        },
+        {
+          "en": "Kufa",
+          "ar": "الكوفة"
+        },
+        {
+          "en": "Al-Manathera",
+          "ar": "المناذرة"
+        }
+      ]
+    },
+    "nineveh": {
+      "name_en": "Nineveh",
+      "lang": {
+        "ar": "نينوى"
+      },
+      "subCities": [
+        {
+          "en": "Mosul",
+          "ar": "الموصل"
+        },
+        {
+          "en": "Tal Afar",
+          "ar": "تلعفر"
+        },
+        {
+          "en": "Sinjar",
+          "ar": "سنجار"
+        },
+        {
+          "en": "Hamdaniya (Qaraqosh)",
+          "ar": "الحمدانية"
+        },
+        {
+          "en": "Hatra",
+          "ar": "الحضر"
+        },
+        {
+          "en": "Shekhan",
+          "ar": "شيخان"
+        },
+        {
+          "en": "Al-Ba'aj",
+          "ar": "البعاج"
+        },
+        {
+          "en": "Qayyarah",
+          "ar": "القيارة"
+        }
+      ]
+    },
+    "salah_ad_din": {
+      "name_en": "Salah ad-Din",
+      "lang": {
+        "ar": "صلاح الدين"
+      },
+      "subCities": [
+        {
+          "en": "Tikrit",
+          "ar": "تكريت"
+        },
+        {
+          "en": "Samarra",
+          "ar": "سامراء"
+        },
+        {
+          "en": "Baiji",
+          "ar": "بيجي"
+        },
+        {
+          "en": "Balad",
+          "ar": "بلد"
+        },
+        {
+          "en": "Shirqat",
+          "ar": "الشرقاط"
+        },
+        {
+          "en": "Tooz Khurmatu",
+          "ar": "طوزخورماتو"
+        },
+        {
+          "en": "Dujail",
+          "ar": "الدجيل"
+        }
+      ]
+    },
+    "sulaymaniyah": {
+      "name_en": "Sulaymaniyah",
+      "lang": {
+        "ar": "السليمانية",
+        "ku": "سلێمانی"
+      },
+      "subCities": [
+        {
+          "en": "Sulaymaniyah City",
+          "ar": "مدينة السليمانية",
+          "ku": "سلێمانی"
+        },
+        {
+          "en": "Chamchamal",
+          "ar": "جمجمال",
+          "ku": "چەمچەماڵ"
+        },
+        {
+          "en": "Rania",
+          "ar": "رانية",
+          "ku": "ڕانیە"
+        },
+        {
+          "en": "Penjwin",
+          "ar": "بن جوين",
+          "ku": "پنجوێن"
+        },
+        {
+          "en": "Dokan",
+          "ar": "دوكان",
+          "ku": "دووکان"
+        },
+        {
+          "en": "Kalar",
+          "ar": "كلار",
+          "ku": "کەلار"
+        }
+      ]
+    },
+    "erbil": {
+      "name_en": "Erbil",
+      "lang": {
+        "ar": "أربيل",
+        "ku": "ھەولێر"
+      },
+      "subCities": [
+        {
+          "en": "Erbil City",
+          "ar": "مدينة أربيل",
+          "ku": "ھەولێر"
+        },
+        {
+          "en": "Soran",
+          "ar": "سوران",
+          "ku": "سۆران"
+        },
+        {
+          "en": "Shaqlawa",
+          "ar": "شقلاوة",
+          "ku": "شەقلاوە"
+        },
+        {
+          "en": "Koysinjaq (Koya)",
+          "ar": "كوية",
+          "ku": "کۆیە"
+        },
+        {
+          "en": "Choman",
+          "ar": "جومان",
+          "ku": "چۆمان"
+        },
+        {
+          "en": "Makhmur",
+          "ar": "مخمور",
+          "ku": "مەخموور"
+        }
+      ]
+    },
+    "duhok": {
+      "name_en": "Duhok",
+      "lang": {
+        "ar": "دهوك",
+        "ku": "دهۆك"
+      },
+      "subCities": [
+        {
+          "en": "Duhok City",
+          "ar": "مدينة دهوك",
+          "ku": "دهۆك"
+        },
+        {
+          "en": "Zakho",
+          "ar": "زاخو",
+          "ku": "زاخۆ"
+        },
+        {
+          "en": "Amadiyah",
+          "ar": "العمادية",
+          "ku": "ئامێدی"
+        },
+        {
+          "en": "Akre",
+          "ar": "عقرة",
+          "ku": "ئاکرێ"
+        },
+        {
+          "en": "Sumel",
+          "ar": "سيميل",
+          "ku": "سیمێل"
+        }
+      ]
+    },
+    "wasit": {
+      "name_en": "Wasit",
+      "lang": {
+        "ar": "واسط"
+      },
+      "subCities": [
+        {
+          "en": "Kut",
+          "ar": "الكوت"
+        },
+        {
+          "en": "Numaniyah",
+          "ar": "النعمانية"
+        },
+        {
+          "en": "Hay",
+          "ar": "الحي"
+        },
+        {
+          "en": "Badra",
+          "ar": "بدرة"
+        },
+        {
+          "en": "Al-Suwayra",
+          "ar": "الصويرة"
+        }
+      ]
+    },
+    "qadisiyyah": {
+      "name_en": "Al-Qadisiyyah",
+      "lang": {
+        "ar": "القادسية"
+      },
+      "subCities": [
+        {
+          "en": "Diwaniyah",
+          "ar": "الديوانية"
+        },
+        {
+          "en": "Shamiya",
+          "ar": "الشامية"
+        },
+        {
+          "en": "Hamza",
+          "ar": "الحمزة"
+        },
+        {
+          "en": "Afaq",
+          "ar": "الأفق"
+        }
+      ]
+    },
+    "halabja": {
+      "name_en": "Halabja",
+      "lang": {
+        "ar": "حلبجة",
+        "ku": "ھەڵەبجە"
+      },
+      "subCities": [
+        {
+          "en": "Halabja City",
+          "ar": "مدينة حلبجة",
+          "ku": "ھەڵەبجە"
+        },
+        {
+          "en": "Sirwan",
+          "ar": "سيروان",
+          "ku": "سیروان"
+        },
+        {
+          "en": "Khurmal",
+          "ar": "خورمال",
+          "ku": "خورمال"
+        },
+        {
+          "en": "Byara",
+          "ar": "بيارة",
+          "ku": "بیارە"
+        },
+        {
+          "en": "Bamo",
+          "ar": "بامو",
+          "ku": "بامۆ"
+        }
+      ]
+    }
+  }
+}
