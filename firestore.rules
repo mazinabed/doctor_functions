@@ -254,6 +254,15 @@ service cloud.firestore {
            ])
         && request.resource.data.status == 'cancelled';
 
+      // ── Patient: mark own completed appointment as reviewed (one-way) ─
+      allow update: if isSignedIn()
+        && resource.data.patientId == request.auth.uid
+        && resource.data.status == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'hasReviewed', 'updatedAt'
+           ])
+        && request.resource.data.hasReviewed == true;
+
       // ── Admin: full update access ──────────────────────────────────────
       allow update: if isAdmin();
     }
@@ -262,7 +271,7 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
     // medical_centers/{centerId}
     //
-    // Read:   any authenticated user
+    // Read:   public for active centers (isActive == true); inactive centers private
     // Create: doctor only; ownerId must match caller; billing fields allowed on
     //         initial creation (doctor sets subscriptionStatus, trialStart, etc.)
     // Update: center owner may update profile fields BUT NOT billing/subscription
@@ -273,7 +282,7 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /medical_centers/{centerId} {
-      allow read: if isSignedIn();
+      allow read: if resource.data.isActive == true;
 
       // Billing fields permitted on creation (doctor sets up initial trial).
       // These same fields are blocked from updates by the owner below.
@@ -372,7 +381,13 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /google_doctors/{id} {
-      allow read: if isAdmin();
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /public_doctors/{doctorId} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
 
     match /facebook_doctors/{id} {

@@ -1835,10 +1835,13 @@
 // );
 
 
-const { onDocumentUpdated } = require("firebase-functions/v2/firestore");
+const { onDocumentUpdated, onDocumentWritten } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 
 admin.initializeApp();
+const db = admin.firestore();
+
+const { isPublicEligible, buildPublicDoc } = require("./lib/publicDoctorSanitizer");
 
 exports.attachDoctorOwnership = onDocumentUpdated(
   "doctors/{doctorId}",
@@ -1873,5 +1876,72 @@ exports.attachDoctorOwnership = onDocumentUpdated(
   }
 );
 
+// ─── Sync safe public doctor profile ─────────────────────────────────────────
+// Fires on every doctors/{doctorId} write (create, update, delete).
+// Eligible doctors → write safe fields to public_doctors/{doctorId}.
+// Ineligible or deleted → remove public_doctors/{doctorId}.
+exports.syncPublicDoctor = onDocumentWritten(
+  "doctors/{doctorId}",
+  async (event) => {
+    const doctorId = event.params.doctorId;
+    const after = event.data.after;
+    const publicRef = db.collection("public_doctors").doc(doctorId);
+
+    // Doctor document deleted → remove public profile
+    if (!after.exists) {
+      await publicRef.delete();
+      console.log(`public_doctors: removed ${doctorId} (source doc deleted)`);
+      return;
+    }
+
+    const data = after.data();
+
+    if (!isPublicEligible(data)) {
+      const existing = await publicRef.get();
+      if (existing.exists) {
+        await publicRef.delete();
+        console.log(`public_doctors: removed ${doctorId} — no longer eligible (status=${data.status})`);
+      } else {
+        console.log(`public_doctors: skipped ${doctorId} — ineligible (status=${data.status})`);
+      }
+      return;
+    }
+
+    const existing = await publicRef.get();
+    const publicDoc = buildPublicDoc(doctorId, data, existing.exists ? existing.data() : null);
+    await publicRef.set(publicDoc);
+    console.log(`public_doctors: synced ${doctorId}`);
+  }
+);
+
+// ─── Recalculate doctor rating when any review is written or deleted ──────────
+// Updates ratingAverage + ratingCount on doctors/{doctorId}.
+// syncPublicDoctor trigger then propagates those fields to public_doctors.
+exports.updateDoctorRating = onDocumentWritten(
+  "doctors/{doctorId}/reviews/{reviewId}",
+  async (event) => {
+    const doctorId = event.params.doctorId;
+    const doctorRef = db.collection("doctors").doc(doctorId);
+    const reviewsSnap = await doctorRef.collection("reviews").get();
+    const count = reviewsSnap.size;
+
+    if (count === 0) {
+      await doctorRef.update({ ratingAverage: 0, ratingCount: 0 });
+      console.log(`updateDoctorRating: ${doctorId} → reset (no reviews)`);
+      return;
+    }
+
+    let total = 0;
+    reviewsSnap.forEach((doc) => { total += doc.data().rating || 0; });
+    const avg = parseFloat((total / count).toFixed(1));
+
+    await doctorRef.update({ ratingAverage: avg, ratingCount: count });
+    console.log(`updateDoctorRating: ${doctorId} → ${avg} (${count} reviews)`);
+  }
+);
+
 const staffFunctions = require("./staff/activateStaffInvite");
 exports.activateStaffInvite = staffFunctions.activateStaffInvite;
+
+const { lookupPatientByPhone } = require("./staff/lookupPatientByPhone");
+exports.lookupPatientByPhone = lookupPatientByPhone;
