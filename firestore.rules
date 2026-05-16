@@ -172,10 +172,10 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /schedules/{scheduleId} {
-      allow read: if isSignedIn()
-        && (resource.data.status == 'published'
-            || resource.data.doctorId == request.auth.uid
-            || isAdmin());
+      // Published active schedules are publicly readable — guest availability browsing.
+      // Unpublished and inactive schedules remain private.
+      allow read: if (resource.data.status == 'published' && resource.data.isActive == true)
+        || (isSignedIn() && (resource.data.doctorId == request.auth.uid || isAdmin()));
 
       allow create: if isDoctor()
         && request.resource.data.doctorId == request.auth.uid;
