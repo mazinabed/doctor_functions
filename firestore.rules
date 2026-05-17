@@ -365,12 +365,27 @@ service cloud.firestore {
 
     match /payments/{paymentId} {
       allow read: if isSignedIn()
-        && (resource.data.userId == request.auth.uid || isAdmin());
+        && (resource == null
+            || resource.data.uid == request.auth.uid
+            || resource.data.userId == request.auth.uid
+            || (resource.data.centerId is string
+                && resource.data.centerId.size() > 0
+                && isCenterOwner(resource.data.centerId))
+            || isAdmin());
 
       allow create: if isSignedIn()
-        && request.resource.data.userId == request.auth.uid;
+        && (request.resource.data.userId == request.auth.uid
+            || request.resource.data.uid == request.auth.uid);
 
-      allow update: if isAdmin();
+      // Scoped client update: payment creator may submit (declared → under_review).
+      // All other status transitions remain admin/server-only.
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && resource.data.uid == request.auth.uid
+            && resource.data.status == 'declared'
+            && request.resource.data.status == 'under_review'
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['status', 'updatedAt']));
     }
 
 
