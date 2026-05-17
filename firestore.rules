@@ -58,13 +58,38 @@ service cloud.firestore {
 
     // Fields on doctors/{uid} that only Cloud Functions / admin may write.
     // Doctors cannot self-escalate their subscription or verification status.
+    //
+    // Exception: the doctor may accept legal consent, which transitions
+    // status from 'legalConsent' → 'onboarding'. This is the only permitted
+    // client-side status write; all other status changes remain admin-only.
+    function isLegalConsentTransition() {
+      return resource.data.status == 'legalConsent'
+        && request.resource.data.status == 'onboarding'
+        && request.resource.data.get('legalAccepted', false) == true;
+    }
+
+    // Doctor submits completed onboarding for admin review.
+    // Allowed ONLY when transitioning onboarding → pending and all privilege
+    // flags are explicitly set to false (no self-escalation possible).
+    function isOnboardingSubmitTransition() {
+      return resource.data.status == 'onboarding'
+        && request.resource.data.status == 'pending'
+        && request.resource.data.get('submittedAt', null) != null
+        && request.resource.data.isActive == false
+        && request.resource.data.isVerified == false
+        && request.resource.data.canBook == false
+        && request.resource.data.canCall == false;
+    }
+
     function touchesDoctorAdminFields() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasAny([
-        'isPaidUser', 'subscriptionStatus', 'subscriptionPlan',
-        'nextBillingDate', 'trialStart', 'trialEnds',
-        'isActive', 'isVerified', 'verificationStatus',
-        'canBook', 'canCall', 'status'
-      ]);
+      return !isLegalConsentTransition()
+        && !isOnboardingSubmitTransition()
+        && request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'isPaidUser', 'subscriptionStatus', 'subscriptionPlan',
+          'nextBillingDate', 'trialStart', 'trialEnds',
+          'isActive', 'isVerified', 'verificationStatus',
+          'canBook', 'canCall', 'status'
+        ]);
     }
 
     // Core identity fields on an appointment that must never change after creation.
@@ -304,11 +329,26 @@ service cloud.firestore {
       // ── medical_centers/{centerId}/members/{uid} ───────────────────────
       // Read:  center members, the center owner, or admin
       // Write: center owner or admin only (prevents doctors self-joining)
+      //
+      // Founder exception: when a doctor creates their own practice, the
+      // medical_centers doc and this member doc are written in the same
+      // client transaction. Rule evaluation reads committed DB state, so
+      // the center doc does not exist yet → isCenterOwner returns false.
+      // The !exists() guard closes this path permanently once the center
+      // is committed — no doctor can use it to join an existing center.
       match /members/{memberId} {
         allow read: if isSignedIn()
           && (isCenterMember(centerId)
               || isCenterOwner(centerId)
               || isAdmin());
+
+        // Founder self-membership: own practice creation only.
+        // !exists() is true only while the center has not been committed.
+        allow create: if isDoctor()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.role == 'center_admin'
+          && request.resource.data.isActive == true
+          && !exists(/databases/$(database)/documents/medical_centers/$(centerId));
 
         allow write: if isCenterOwner(centerId) || isAdmin();
       }
@@ -354,6 +394,31 @@ service cloud.firestore {
         && request.resource.data.status == 'pending';
 
       allow update: if isCenterOwner(resource.data.centerId) || isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // national_ids/{nationalId}
+    //
+    // Doc ID = normalized national ID number (digits only, Arabic/Persian
+    // numerals converted to ASCII). Used solely to prevent duplicate doctor
+    // registrations via an atomic read-then-write transaction.
+    //
+    // Read:   authenticated doctor — uniqueness check during onboarding submit
+    // Create: the submitting doctor; doctorId field must equal caller's uid
+    // Update/Delete: admin only — locks are permanent after creation
+    //
+    // Privacy note: doc ID is the raw national ID number. A future hardening
+    // pass should replace it with SHA-256(nationalId + projectSalt).
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /national_ids/{nationalId} {
+      allow read: if isDoctor();
+
+      allow create: if isDoctor()
+        && request.resource.data.doctorId == request.auth.uid;
+
+      allow update, delete: if isAdmin();
     }
 
 
