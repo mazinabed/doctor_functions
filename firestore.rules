@@ -408,14 +408,15 @@ service cloud.firestore {
         // Renewal: center owner may re-initiate payment from a completed cycle.
         // The open payment doc (open_center_{centerId}) is reused across renewals.
         // .set(merge:true) on an existing doc evaluates as update in rules.
-        // This only allows completed → declared; activated is still admin/server-only.
+        // Target may be awaiting_transfer (new canonical) or declared (legacy);
+        // activation still requires admin approval in both cases.
         || (isSignedIn()
             && (resource.data.uid == request.auth.uid
                 || (resource.data.centerId is string
                     && resource.data.centerId.size() > 0
                     && isCenterOwner(resource.data.centerId)))
             && resource.data.status == 'completed'
-            && request.resource.data.status == 'declared'
+            && request.resource.data.status in ['awaiting_transfer', 'declared']
             && request.resource.data.centerId == resource.data.centerId
             && request.resource.data.uid == request.auth.uid
             && request.resource.data.userId == request.auth.uid)
@@ -429,15 +430,16 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys()
                  .hasOnly(['status', 'submittedAt', 'updatedAt']))
         // Resubmit after rejection: original submitter or current center owner may
-        // restart a rejected open payment doc. centerId is immutable; target status
-        // must be declared so activation still requires admin approval.
+        // restart a rejected open payment doc. centerId is immutable; target may be
+        // awaiting_transfer (new canonical) or declared (backward compat for legacy
+        // clients). Activation still requires admin approval in both cases.
         || (isSignedIn()
             && (resource.data.uid == request.auth.uid
                 || (resource.data.centerId is string
                     && resource.data.centerId.size() > 0
                     && isCenterOwner(resource.data.centerId)))
             && resource.data.status == 'rejected'
-            && request.resource.data.status == 'declared'
+            && request.resource.data.status in ['awaiting_transfer', 'declared']
             && request.resource.data.centerId == resource.data.centerId
             && request.resource.data.uid == request.auth.uid);
     }
