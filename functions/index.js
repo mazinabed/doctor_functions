@@ -1945,3 +1945,6 @@ exports.activateStaffInvite = staffFunctions.activateStaffInvite;
 
 const { lookupPatientByPhone } = require("./staff/lookupPatientByPhone");
 exports.lookupPatientByPhone = lookupPatientByPhone;
+
+const { expireCenters } = require("./expireCenters");
+exports.expireCenters = expireCenters;
