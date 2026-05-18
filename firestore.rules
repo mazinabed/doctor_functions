@@ -358,9 +358,9 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
     // payments/{paymentId}
     //
-    // Read:   own payment (userId match) or admin
+    // Read:   own payment (userId match) or center owner or admin
     // Create: authenticated user for their own payment (initiating subscription)
-    // Update: admin only — Cloud Functions use Admin SDK and bypass rules
+    // Update: admin always; client may submit (declared→under_review) or renew (completed→declared)
     // ───────────────────────────────────────────────────────────────────────
 
     match /payments/{paymentId} {
@@ -380,12 +380,27 @@ service cloud.firestore {
       // Scoped client update: payment creator may submit (declared → under_review).
       // All other status transitions remain admin/server-only.
       allow update: if isAdmin()
+        // Step 2: submit for review after declaring intent
         || (isSignedIn()
             && resource.data.uid == request.auth.uid
             && resource.data.status == 'declared'
             && request.resource.data.status == 'under_review'
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['status', 'updatedAt']));
+                 .hasOnly(['status', 'updatedAt']))
+        // Renewal: center owner may re-initiate payment from a completed cycle.
+        // The open payment doc (open_center_{centerId}) is reused across renewals.
+        // .set(merge:true) on an existing doc evaluates as update in rules.
+        // This only allows completed → declared; activated is still admin/server-only.
+        || (isSignedIn()
+            && (resource.data.uid == request.auth.uid
+                || (resource.data.centerId is string
+                    && resource.data.centerId.size() > 0
+                    && isCenterOwner(resource.data.centerId)))
+            && resource.data.status == 'completed'
+            && request.resource.data.status == 'declared'
+            && request.resource.data.centerId == resource.data.centerId
+            && request.resource.data.uid == request.auth.uid
+            && request.resource.data.userId == request.auth.uid);
     }
 
 
