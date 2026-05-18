@@ -56,6 +56,20 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/medical_centers/$(centerId)).data.ownerId == request.auth.uid;
     }
 
+    // Center is operationally active: now falls within trial, subscription,
+    // or grace period window. Mirrors centerAccessProvider date-only logic.
+    // Returns false (fail-closed) if all date fields are absent.
+    function centerIsOperational(centerId) {
+      let center = get(/databases/$(database)/documents/medical_centers/$(centerId));
+      let now = request.time;
+      let trialEnds = center.data.get('trialEnds', null);
+      let subscriptionEnd = center.data.get('subscriptionEnd', null);
+      let gracePeriodEnds = center.data.get('gracePeriodEnds', null);
+      return (trialEnds != null && now < trialEnds)
+        || (subscriptionEnd != null && now < subscriptionEnd)
+        || (gracePeriodEnds != null && now < gracePeriodEnds);
+    }
+
     // Fields on doctors/{uid} that only Cloud Functions / admin may write.
     // Doctors cannot self-escalate their subscription or verification status.
     //
@@ -203,10 +217,12 @@ service cloud.firestore {
         || (isSignedIn() && (resource.data.doctorId == request.auth.uid || isAdmin()));
 
       allow create: if isDoctor()
-        && request.resource.data.doctorId == request.auth.uid;
+        && request.resource.data.doctorId == request.auth.uid
+        && centerIsOperational(request.resource.data.centerId);
 
       allow update: if isDoctor()
-        && resource.data.doctorId == request.auth.uid;
+        && resource.data.doctorId == request.auth.uid
+        && centerIsOperational(resource.data.centerId);
 
       allow delete: if (isDoctor() && resource.data.doctorId == request.auth.uid)
         || isAdmin();
@@ -246,7 +262,8 @@ service cloud.firestore {
         && request.resource.data.bookedByRole == 'patient'
         && request.resource.data.status == 'pending'
         && request.resource.data.paymentStatus == 'unpaid'
-        && request.resource.data.visitStatus == 'waiting';
+        && request.resource.data.visitStatus == 'waiting'
+        && centerIsOperational(request.resource.data.centerId);
 
       // ── Path B: center staff / doctor walk-in or follow-up booking ────
       allow create: if isSignedIn()
@@ -255,7 +272,8 @@ service cloud.firestore {
         && isCenterMember(request.resource.data.centerId)
         && request.resource.data.status in ['pending', 'confirmed']
         && request.resource.data.paymentStatus == 'unpaid'
-        && request.resource.data.visitStatus == 'waiting';
+        && request.resource.data.visitStatus == 'waiting'
+        && centerIsOperational(request.resource.data.centerId);
 
       // ── Doctor: update own appointment (status, visitStatus, paymentStatus, notes) ─
       allow update: if isSignedIn()
