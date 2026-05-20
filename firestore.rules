@@ -354,10 +354,15 @@ service cloud.firestore {
     // Document ID == appointmentId (deterministic: one note per appointment).
     //
     // Privacy model:
-    //   Doctor who wrote the note → read + create + update content fields
-    //   Admin                     → read only
+    //   Doctor who wrote the note → get + list + create + update
+    //   Admin                     → read (get + list) only
     //   Center staff/reception    → intentionally NO access (clinical notes)
     //   Patient app               → intentionally NO access (MVP)
+    //
+    // GET vs LIST split:
+    //   get  — note may not exist yet (first visit). When resource == null,
+    //          authorize via appointments/{appointmentId}.doctorId instead.
+    //   list — history query; document always exists, so resource.data is safe.
     //
     // Immutable core fields: patientId, doctorId, centerId, appointmentId,
     //   createdAt, createdByUserId, createdByRole, schemaVersion
@@ -366,30 +371,46 @@ service cloud.firestore {
 
     match /patient_visit_notes/{appointmentId} {
 
-      // Doctor reads only their own notes
-      allow read: if isSignedIn()
+      // GET a single note document (doctor or admin).
+      // Case 1: note exists — verify doctorId ownership directly.
+      // Case 2: note does not exist yet (first visit before any note is saved) —
+      //         cross-reference the appointment document to verify ownership.
+      //         noteId == appointmentId so no extra lookup key is needed.
+      //         Cost: 1 extra read on appointments/{appointmentId} only when
+      //         the note is absent; zero extra reads once the note exists.
+      allow get: if isSignedIn() && (
+          (resource != null && resource.data.doctorId == request.auth.uid)
+          || (resource == null
+              && get(/databases/$(database)/documents/appointments/$(appointmentId)).data.doctorId == request.auth.uid)
+        );
+
+      // LIST (patient history query) — documents always exist in queries,
+      // so resource.data is safe. Doctor sees only their own notes.
+      allow list: if isSignedIn()
         && resource.data.doctorId == request.auth.uid;
 
-      // Admin can read all notes
+      // Admin can get + list all notes.
       allow read: if isAdmin();
 
-      // Doctor creates a note — must be scoped to their own doctorId
+      // Doctor creates a note — ownership + schema validation.
+      // appointmentId field must match the document ID to prevent ID spoofing.
       allow create: if isSignedIn()
         && isDoctor()
         && request.resource.data.doctorId == request.auth.uid
+        && request.resource.data.appointmentId == appointmentId
         && request.resource.data.createdByUserId == request.auth.uid
         && request.resource.data.createdByRole == 'doctor'
         && request.resource.data.schemaVersion == 1
         && request.resource.data.clinicalNote is string;
 
-      // Doctor may update only the clinical content of their own note
+      // Doctor may update only the clinical content of their own note.
       allow update: if isSignedIn()
         && resource.data.doctorId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'clinicalNote', 'followUpNote', 'updatedAt'
            ]);
 
-      // Notes are permanent records — no client-side delete
+      // Notes are permanent records — no client-side delete.
     }
 
 
