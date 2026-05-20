@@ -349,6 +349,51 @@ service cloud.firestore {
 
 
     // ───────────────────────────────────────────────────────────────────────
+    // patient_visit_notes/{appointmentId}
+    //
+    // Document ID == appointmentId (deterministic: one note per appointment).
+    //
+    // Privacy model:
+    //   Doctor who wrote the note → read + create + update content fields
+    //   Admin                     → read only
+    //   Center staff/reception    → intentionally NO access (clinical notes)
+    //   Patient app               → intentionally NO access (MVP)
+    //
+    // Immutable core fields: patientId, doctorId, centerId, appointmentId,
+    //   createdAt, createdByUserId, createdByRole, schemaVersion
+    // Mutable fields: clinicalNote, followUpNote, updatedAt
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /patient_visit_notes/{appointmentId} {
+
+      // Doctor reads only their own notes
+      allow read: if isSignedIn()
+        && resource.data.doctorId == request.auth.uid;
+
+      // Admin can read all notes
+      allow read: if isAdmin();
+
+      // Doctor creates a note — must be scoped to their own doctorId
+      allow create: if isSignedIn()
+        && isDoctor()
+        && request.resource.data.doctorId == request.auth.uid
+        && request.resource.data.createdByUserId == request.auth.uid
+        && request.resource.data.createdByRole == 'doctor'
+        && request.resource.data.schemaVersion == 1
+        && request.resource.data.clinicalNote is string;
+
+      // Doctor may update only the clinical content of their own note
+      allow update: if isSignedIn()
+        && resource.data.doctorId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'clinicalNote', 'followUpNote', 'updatedAt'
+           ]);
+
+      // Notes are permanent records — no client-side delete
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
     // medical_centers/{centerId}
     //
     // Read:   public for active centers (isActive == true); inactive centers private
