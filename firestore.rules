@@ -135,6 +135,26 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ───────────────────────────────────────────────────────────────────────
+    // public_daily_health_weather/{provinceKey}
+    //
+    // Environmental awareness data — cached province-level summaries written
+    // once daily by the scheduleDailyHealthWeather Cloud Function (Admin SDK,
+    // which bypasses these rules entirely).
+    //
+    // Read:  public — no auth required (environmental data, no PII).
+    // Write: Admin SDK only in normal operation.
+    //        isAdmin() guard allows super-admin manual override if needed
+    //        (e.g., correcting a stale document without redeploying the function).
+    //
+    // No user data is stored in this collection.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /public_daily_health_weather/{provinceKey} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // users/{uid}

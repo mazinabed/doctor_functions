@@ -1948,3 +1948,6 @@ exports.lookupPatientByPhone = lookupPatientByPhone;
 
 const { expireCenters } = require("./expireCenters");
 exports.expireCenters = expireCenters;
+
+const { scheduleDailyHealthWeather } = require("./scheduleDailyHealthWeather");
+exports.scheduleDailyHealthWeather = scheduleDailyHealthWeather;
