@@ -155,6 +155,23 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ───────────────────────────────────────────────────────────────────────
+    // public_home_announcements/{id}
+    //
+    // General-awareness dashboard cards shown in the patient home screen.
+    // Contains no PII — purely editorial content (clinic schedules, health
+    // campaigns, system notices).
+    //
+    // Read:  public — no auth required.
+    // Write: super-admin only (manual Firestore console or admin portal).
+    //        Admin SDK Cloud Functions also bypass these rules if needed.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /public_home_announcements/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // users/{uid}
