@@ -7,6 +7,15 @@
         { "fieldPath": "active", "order": "ASCENDING" },
         { "fieldPath": "endAt", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "patient_visit_notes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "patientId", "order": "ASCENDING" },
+        { "fieldPath": "doctorId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
