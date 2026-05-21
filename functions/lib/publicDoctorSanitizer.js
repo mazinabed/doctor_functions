@@ -115,6 +115,39 @@ function buildPublicDoc(doctorId, data, existingPublicData) {
     canBook: data.canBook === true,
     canCall: data.canCall === true,
 
+    // ── Social links ──────────────────────────────────────────────────────────
+    // Only exposed when the doctor explicitly enables showSocialLinks.
+    // Each value is validated: must be a non-empty http/https URL.
+    // Non-http/https values (javascript:, tel:, etc.) are silently dropped.
+    showSocialLinks: data.showSocialLinks === true,
+    socialLinks: (data.showSocialLinks === true &&
+                  data.socialLinks !== null &&
+                  typeof data.socialLinks === 'object')
+      ? Object.fromEntries(
+          ['instagram', 'facebook', 'tiktok', 'youtube', 'website']
+            .filter(k =>
+              typeof data.socialLinks[k] === 'string' &&
+              /^https?:\/\//i.test(data.socialLinks[k].trim())
+            )
+            .map(k => [k, data.socialLinks[k].trim()])
+        )
+      : null,
+
+    // ── Public contact ────────────────────────────────────────────────────────
+    // phone: only exposed when canCall is explicitly true (admin-controlled gate).
+    //        Fail-closed: absent canCall → null, never leaked.
+    // email: exposed when the doctor entered a public contact email during
+    //        onboarding. accountEmail (auth/login) is a separate field and is
+    //        never referenced here.
+    phone: (data.canCall === true &&
+            typeof data.phone === 'string' &&
+            data.phone.trim().length > 0)
+      ? data.phone.trim()
+      : null,
+    email: (typeof data.email === 'string' && data.email.trim().length > 0)
+      ? data.email.trim()
+      : null,
+
     // ── Status / visibility ───────────────────────────────────────────────────
     status:     "active",
     isActive:   true,

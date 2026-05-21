@@ -203,7 +203,10 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
     // doctors/{uid}
     //
-    // Read:   any authenticated user (public profiles)
+    // Read:   own doc, admin, or another verified doctor (portal use).
+    //         Patients rely on public_doctors/{uid} — a safe projection that
+    //         excludes phone, email, nationalId, license docs, and billing.
+    //         Tightened from isSignedIn() to block patient-side direct reads.
     // Create: doctor self-registration (uid must match)
     // Update: doctor updates own profile fields; admin updates any field
     //         Protected fields (touchesDoctorAdminFields): only admin / Cloud Functions
@@ -212,7 +215,8 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /doctors/{uid} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid || isAdmin() || isDoctor());
 
       allow create: if isSignedIn()
         && request.auth.uid == uid;
