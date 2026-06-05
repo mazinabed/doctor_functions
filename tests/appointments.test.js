@@ -2,7 +2,7 @@
 
 const { assertFails, assertSucceeds } = require('@firebase/rules-unit-testing');
 const { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } = require('firebase/firestore');
-const { createTestEnv, seedDatabase } = require('./helpers');
+const { createTestEnv, seedDatabase, FUTURE } = require('./helpers');
 
 let testEnv;
 
@@ -410,6 +410,189 @@ describe('appointments — updates', () => {
     const db = testEnv.authenticatedContext('uid_patient1').firestore();
     await assertFails(
       updateDoc(doc(db, 'appointments', 'appt1'), { paymentStatus: 'paid' })
+    );
+  });
+
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. appointments — paymentStatus update (unpaid → paid)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('7. appointments — paymentStatus update', () => {
+
+  const validPaymentUpdate = (uid) => ({
+    paymentStatus:            'paid',
+    paymentStatusUpdatedAt:   new Date(),
+    paymentStatusUpdatedBy:   uid,
+    updatedAt:                new Date(),
+  });
+
+  test('7.1 center staff (receptionist) can mark unpaid → paid with all audit fields', async () => {
+    // uid_doctor2 is a receptionist member of center1; appt1 is unpaid.
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, 'appointments', 'appt1'), validPaymentUpdate('uid_doctor2'))
+    );
+  });
+
+  test('7.2 center staff cannot mark paid without audit fields', async () => {
+    // Only paymentStatus written — required audit fields missing → hasOnly fails.
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'appointments', 'appt1'), { paymentStatus: 'paid' })
+    );
+  });
+
+  test('7.3 center staff cannot omit paymentStatusUpdatedBy', async () => {
+    // Partial audit fields: missing paymentStatusUpdatedBy → hasOnly fails.
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'appointments', 'appt1'), {
+        paymentStatus:          'paid',
+        paymentStatusUpdatedAt: new Date(),
+        updatedAt:              new Date(),
+      })
+    );
+  });
+
+  test('7.4 doctor cannot update paymentStatus (view-only)', async () => {
+    // uid_doctor1 owns appt1 but the doctor rule now excludes paymentStatus fields.
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'appointments', 'appt1'), validPaymentUpdate('uid_doctor1'))
+    );
+  });
+
+  test('7.5 non-member cannot mark as paid', async () => {
+    // uid_patient1 has no membership in center1 (only uid_doctor2 + uid_center_admin are seeded).
+    // appt1 belongs to center1 → isCenterMember(center1) is false for uid_patient1.
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'appointments', 'appt1'), validPaymentUpdate('uid_patient1'))
+    );
+  });
+
+  test('7.6 already-paid appointment cannot be marked paid again', async () => {
+    // Seed an appointment that is already paid.
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'appointments', 'appt_paid'), {
+        patientId: 'uid_patient1', doctorId: 'uid_doctor1', centerId: 'center1',
+        source: 'patient_app', status: 'confirmed', visitStatus: 'waiting',
+        paymentStatus: 'paid',
+        bookedByUserId: 'uid_patient1', bookedByRole: 'patient',
+        slotId: 'slot_paid', createdAt: new Date(), appointmentAt: new Date(),
+      });
+    });
+    // isPaymentStatusUpdate checks resource.data.paymentStatus == 'unpaid' → fails.
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'appointments', 'appt_paid'), validPaymentUpdate('uid_doctor2'))
+    );
+  });
+
+  test('7.7 center staff cannot set arbitrary paymentStatus value', async () => {
+    // rule enforces request.resource.data.paymentStatus == 'paid' exactly.
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'appointments', 'appt1'), {
+        paymentStatus:          'refunded',
+        paymentStatusUpdatedAt: new Date(),
+        paymentStatusUpdatedBy: 'uid_doctor2',
+        updatedAt:              new Date(),
+      })
+    );
+  });
+
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. appointments — Path B paid-at-creation (reception booking with payment)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('8. appointments — Path B paid-at-creation', () => {
+
+  // Minimal valid Path B base (walk-in, unpaid by default)
+  const pathBBase = (uid) => ({
+    patientId:      null,
+    doctorId:       'uid_doctor1',
+    centerId:       'center1',
+    source:         'walk_in',
+    status:         'confirmed',
+    visitStatus:    'waiting',
+    paymentStatus:  'unpaid',
+    bookedByUserId: uid,
+    bookedByRole:   'doctor',
+    appointmentAt:  new Date(),
+    dateKey:        '2026-07-01',
+    slotId:         'slot_new8',
+    createdAt:      new Date(),
+  });
+
+  test('8.1 center staff can create walk-in with paymentStatus unpaid (baseline)', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'appointments', 'appt_b_unpaid'), pathBBase('uid_doctor2'))
+    );
+  });
+
+  test('8.2 center staff can create walk-in with paymentStatus paid and audit fields', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'appointments', 'appt_b_paid'), {
+        ...pathBBase('uid_doctor2'),
+        paymentStatus:          'paid',
+        paymentStatusUpdatedBy: 'uid_doctor2',
+        paymentStatusUpdatedAt: new Date(),
+        paymentMethod:          'front_desk_cash',
+      })
+    );
+  });
+
+  test('8.3 center staff cannot create with paymentStatus paid but wrong updatedBy', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(
+      setDoc(doc(db, 'appointments', 'appt_b_spoofed'), {
+        ...pathBBase('uid_doctor2'),
+        paymentStatus:          'paid',
+        paymentStatusUpdatedBy: 'uid_other',   // spoofed — not the caller
+        paymentStatusUpdatedAt: new Date(),
+        paymentMethod:          'front_desk_cash',
+      })
+    );
+  });
+
+  test('8.4 center staff cannot create with paymentStatus paid but wrong paymentMethod', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(
+      setDoc(doc(db, 'appointments', 'appt_b_bad_method'), {
+        ...pathBBase('uid_doctor2'),
+        paymentStatus:          'paid',
+        paymentStatusUpdatedBy: 'uid_doctor2',
+        paymentStatusUpdatedAt: new Date(),
+        paymentMethod:          'bank_transfer',   // not front_desk_cash
+      })
+    );
+  });
+
+  test('8.5 patient cannot create appointment with paymentStatus paid (Path A enforces unpaid)', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      setDoc(doc(db, 'appointments', 'appt_a_paid'), {
+        patientId:      'uid_patient1',
+        doctorId:       'uid_doctor1',
+        centerId:       'center1',
+        source:         'patient_app',
+        status:         'pending',
+        visitStatus:    'waiting',
+        paymentStatus:  'paid',                    // Path A rule: must be 'unpaid'
+        bookedByUserId: 'uid_patient1',
+        bookedByRole:   'patient',
+        appointmentAt:  new Date(),
+        dateKey:        '2026-07-01',
+        slotId:         'slot_pa_paid',
+        createdAt:      new Date(),
+        patientHealthSnapshot: null,
+      })
     );
   });
 

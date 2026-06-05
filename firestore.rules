@@ -92,6 +92,30 @@ service cloud.firestore {
         && (isCenterOwner(targetId) || isCenterAdminForCenter(targetId));
     }
 
+    // Center staff may mark an appointment unpaid → paid.
+    // All three audit fields must be co-written with paymentStatus; no other
+    // fields may change. The caller must be a member of the appointment's center.
+    function isPaymentStatusUpdate(centerId) {
+      return isSignedIn()
+        && isCenterMember(centerId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'paymentStatus', 'paymentStatusUpdatedAt',
+             'paymentStatusUpdatedBy', 'updatedAt'
+           ])
+        && resource.data.paymentStatus == 'unpaid'
+        && request.resource.data.paymentStatus == 'paid'
+        && request.resource.data.paymentStatusUpdatedBy == request.auth.uid;
+    }
+
+    // Path B (reception/walk-in) may create as unpaid or pre-paid.
+    // Pre-paid requires identity and method audit; patient app is always unpaid.
+    function isValidCreationPayment() {
+      return request.resource.data.paymentStatus == 'unpaid'
+        || (request.resource.data.paymentStatus == 'paid'
+            && request.resource.data.paymentStatusUpdatedBy == request.auth.uid
+            && request.resource.data.get('paymentMethod', '') == 'front_desk_cash');
+    }
+
     // Center is operationally active: now falls within trial, subscription,
     // or grace period window. Mirrors centerAccessProvider date-only logic.
     // Returns false (fail-closed) if all date fields are absent.
@@ -365,29 +389,37 @@ service cloud.firestore {
       // ── Path B: center staff / doctor walk-in or follow-up booking ────
       // Reception has no access to patient_health_profiles.
       // patientHealthSnapshot must always be null for Path B writes.
+      // Payment may be unpaid (default) or paid-at-creation with audit trail.
       allow create: if isSignedIn()
         && request.resource.data.source in ['walk_in', 'reception', 'doctor_followup']
         && request.resource.data.bookedByUserId == request.auth.uid
         && isCenterMember(request.resource.data.centerId)
         && request.resource.data.status in ['pending', 'confirmed']
-        && request.resource.data.paymentStatus == 'unpaid'
         && request.resource.data.visitStatus == 'waiting'
         && centerIsOperational(request.resource.data.centerId)
-        && request.resource.data.get('patientHealthSnapshot', null) == null;
+        && request.resource.data.get('patientHealthSnapshot', null) == null
+        && isValidCreationPayment();
 
-      // ── Doctor: update own appointment (status, visitStatus, paymentStatus, notes) ─
+      // ── Doctor: update own appointment (status, visitStatus, notes) — paymentStatus excluded ─
       allow update: if isSignedIn()
         && resource.data.doctorId == request.auth.uid
-        && appointmentCoreUnchanged();
+        && appointmentCoreUnchanged()
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+             'paymentStatus', 'paymentStatusUpdatedAt', 'paymentStatusUpdatedBy'
+           ]);
 
-      // ── Center staff: restricted field update (reception board) ───────
+      // ── Center staff: lifecycle updates (visitStatus, status, notes) ──────
       allow update: if isSignedIn()
         && isCenterMember(resource.data.centerId)
         && appointmentCoreUnchanged()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-             'visitStatus', 'paymentStatus', 'status', 'notes',
+             'visitStatus', 'status', 'notes',
              'updatedAt', 'confirmedAt', 'cancelledAt', 'completedAt'
            ]);
+
+      // ── Center staff: payment marking (unpaid → paid, audit fields required) ─
+      allow update: if appointmentCoreUnchanged()
+        && isPaymentStatusUpdate(resource.data.centerId);
 
       // ── Patient: cancel own appointment only ──────────────────────────
       allow update: if isSignedIn()
