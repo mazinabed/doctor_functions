@@ -58,7 +58,9 @@ function buildPublicDoc(doctorId, data, existingPublicData) {
     name_en:    data.name_en    || data.name || "",
     name_ar:    data.name_ar    || data.name || "",
     name_ku:    data.name_ku    || data.name || "",
-    name_lower: data.name_lower || (data.name_en || data.name || "").toLowerCase(),
+    name_lower:    data.name_lower || (data.name_en || data.name || "").toLowerCase(),
+    name_ar_lower: (data.name_ar || "").toLowerCase(),
+    name_ku_lower: (data.name_ku || "").toLowerCase(),
     imageUrl,
     photos: Array.isArray(data.photos)
       ? data.photos.filter((p) => String(p).startsWith("http"))

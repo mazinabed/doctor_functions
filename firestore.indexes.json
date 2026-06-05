@@ -35,6 +35,36 @@
         { "fieldPath": "dateKey", "order": "ASCENDING" },
         { "fieldPath": "appointmentAt", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "public_doctors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "province_key", "order": "ASCENDING" },
+        { "fieldPath": "city_en", "order": "ASCENDING" },
+        { "fieldPath": "name_lower", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "public_doctors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "province_key", "order": "ASCENDING" },
+        { "fieldPath": "city_en", "order": "ASCENDING" },
+        { "fieldPath": "name_ar_lower", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "public_doctors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "province_key", "order": "ASCENDING" },
+        { "fieldPath": "city_en", "order": "ASCENDING" },
+        { "fieldPath": "name_ku_lower", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
