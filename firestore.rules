@@ -56,6 +56,42 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/medical_centers/$(centerId)).data.ownerId == request.auth.uid;
     }
 
+    // Center admin (unscoped): caller's users doc has centerRole == 'center_admin'.
+    // Use for read-only rules where the specific center is embedded in each document
+    // (e.g. doctors list query where centerId is in the document, not the rule path).
+    // Costs 1 document read per rule evaluation.
+    function isCenterAdmin() {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('centerRole', '') == 'center_admin';
+    }
+
+    // Center admin scoped to a specific centerId.
+    // Use wherever the target center is known from the rule path or resource data.
+    // Prevents a center admin of one center from acting on another center.
+    // Costs 1 document read per rule evaluation.
+    function isCenterAdminForCenter(centerId) {
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return isSignedIn()
+        && userDoc.get('centerRole', '') == 'center_admin'
+        && userDoc.get('centerId', '') == centerId;
+    }
+
+    // Center owner OR scoped center admin may update exactly the three
+    // doctor-to-center link fields (centerId, centerJoinStatus, centerJoinApprovedAt).
+    // Approve flow: centerId is being set — verifies ownership/admin of the new center.
+    // Remove flow:  centerId is being cleared — verifies ownership/admin of current center.
+    function isDoctorCenterLinkUpdate() {
+      let newCenterId = request.resource.data.get('centerId', null);
+      let oldCenterId = resource.data.get('centerId', null);
+      let targetId = newCenterId != null ? newCenterId : oldCenterId;
+      return isSignedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'centerId', 'centerJoinStatus', 'centerJoinApprovedAt'
+           ])
+        && targetId != null
+        && (isCenterOwner(targetId) || isCenterAdminForCenter(targetId));
+    }
+
     // Center is operationally active: now falls within trial, subscription,
     // or grace period window. Mirrors centerAccessProvider date-only logic.
     // Returns false (fail-closed) if all date fields are absent.
@@ -107,12 +143,24 @@ service cloud.firestore {
     }
 
     // Core identity fields on an appointment that must never change after creation.
+    // patientHealthSnapshot is immutable — health context is fixed at booking time.
     function appointmentCoreUnchanged() {
       return !request.resource.data.diff(resource.data).affectedKeys().hasAny([
         'patientId', 'doctorId', 'centerId', 'source',
         'bookedByUserId', 'bookedByRole', 'appointmentAt',
-        'dateKey', 'slotId', 'createdAt'
+        'dateKey', 'slotId', 'createdAt', 'patientHealthSnapshot'
       ]);
+    }
+
+    // Validates the embedded health snapshot written at booking time.
+    //   null  → family/relative booking or missing profile — always allowed.
+    //   map   → self-booking snapshot; must be schemaVersion 1 and must NOT
+    //           include dateOfBirth (DOB is never stored in appointment documents).
+    function validHealthSnapshot(snap) {
+      return snap == null
+        || (snap is map
+            && snap.get('schemaVersion', 0) == 1
+            && !snap.keys().hasAny(['dateOfBirth']));
     }
 
 
@@ -215,8 +263,10 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /doctors/{uid} {
+      // isCenterAdmin() allows non-doctor center managers to read doctor
+      // profiles for center management (pending requests, approved doctors list).
       allow read: if isSignedIn()
-        && (request.auth.uid == uid || isAdmin() || isDoctor());
+        && (request.auth.uid == uid || isAdmin() || isDoctor() || isCenterAdmin());
 
       allow create: if isSignedIn()
         && request.auth.uid == uid;
@@ -224,7 +274,10 @@ service cloud.firestore {
       allow update: if isAdmin()
         || (isSignedIn()
             && request.auth.uid == uid
-            && !touchesDoctorAdminFields());
+            && !touchesDoctorAdminFields())
+        // Center owner or scoped center admin may link/unlink a doctor during
+        // the join-request approve and remove flows (ManageDoctors tab).
+        || isDoctorCenterLinkUpdate();
 
 
       // ── doctors/{uid}/reviews ──────────────────────────────────────────
@@ -296,6 +349,8 @@ service cloud.firestore {
             || isAdmin());
 
       // ── Path A: patient self-booking ──────────────────────────────────
+      // patientHealthSnapshot may be null (missing profile) or a valid snapshot
+      // map (self-booking with health data). dateOfBirth is always excluded.
       allow create: if isSignedIn()
         && request.resource.data.source == 'patient_app'
         && request.resource.data.patientId == request.auth.uid
@@ -304,9 +359,12 @@ service cloud.firestore {
         && request.resource.data.status == 'pending'
         && request.resource.data.paymentStatus == 'unpaid'
         && request.resource.data.visitStatus == 'waiting'
-        && centerIsOperational(request.resource.data.centerId);
+        && centerIsOperational(request.resource.data.centerId)
+        && validHealthSnapshot(request.resource.data.get('patientHealthSnapshot', null));
 
       // ── Path B: center staff / doctor walk-in or follow-up booking ────
+      // Reception has no access to patient_health_profiles.
+      // patientHealthSnapshot must always be null for Path B writes.
       allow create: if isSignedIn()
         && request.resource.data.source in ['walk_in', 'reception', 'doctor_followup']
         && request.resource.data.bookedByUserId == request.auth.uid
@@ -314,7 +372,8 @@ service cloud.firestore {
         && request.resource.data.status in ['pending', 'confirmed']
         && request.resource.data.paymentStatus == 'unpaid'
         && request.resource.data.visitStatus == 'waiting'
-        && centerIsOperational(request.resource.data.centerId);
+        && centerIsOperational(request.resource.data.centerId)
+        && request.resource.data.get('patientHealthSnapshot', null) == null;
 
       // ── Doctor: update own appointment (status, visitStatus, paymentStatus, notes) ─
       allow update: if isSignedIn()
@@ -419,6 +478,64 @@ service cloud.firestore {
 
 
     // ───────────────────────────────────────────────────────────────────────
+    // patient_health_profiles/{patientId}
+    //
+    // Optional health context entered by the patient: date of birth, gender,
+    // blood type, allergies, chronic conditions, current medications.
+    //
+    // Privacy model:
+    //   Patient    → get own document only (no list — prevents enumeration)
+    //   Admin      → read only (compliance audit)
+    //   Doctor     → NO direct access to this collection
+    //   Reception  → NO access
+    //
+    // Doctors read health data only through appointments/{id}.patientHealthSnapshot,
+    // which is embedded at booking time for self-bookings.
+    // This prevents any doctor from listing or querying all patients' health profiles.
+    //
+    // Document ID == patientId (one document per patient, deterministic).
+    //
+    // Immutable after creation: patientId, schemaVersion
+    // Mutable:                  dateOfBirth, gender, bloodType, allergies,
+    //                           chronicConditions, currentMedications, updatedAt
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /patient_health_profiles/{patientId} {
+
+      // Patient reads only their own profile.
+      // 'get' only — 'list' is intentionally absent to block collection enumeration.
+      allow get: if isSignedIn()
+        && request.auth.uid == patientId;
+
+      // Patient creates their own profile.
+      // patientId field must match document ID and caller uid.
+      // schemaVersion must be 1 on creation.
+      allow create: if isSignedIn()
+        && request.auth.uid == patientId
+        && request.resource.data.patientId == patientId
+        && request.resource.data.schemaVersion == 1;
+
+      // Patient updates mutable fields only.
+      // patientId and schemaVersion cannot change after creation.
+      allow update: if isSignedIn()
+        && request.auth.uid == patientId
+        && request.resource.data.patientId == resource.data.patientId
+        && request.resource.data.schemaVersion == resource.data.schemaVersion
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'dateOfBirth', 'gender', 'bloodType',
+             'allergies', 'chronicConditions', 'currentMedications',
+             'updatedAt'
+           ]);
+
+      // No client-side delete — patients clear data by nulling fields via update.
+      allow delete: if false;
+
+      // Admin read for compliance audit.
+      allow read: if isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
     // medical_centers/{centerId}
     //
     // Read:   public for active centers (isActive == true); inactive centers private
@@ -442,6 +559,15 @@ service cloud.firestore {
       allow update: if isAdmin()
         || (isSignedIn()
             && resource.data.ownerId == request.auth.uid
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                 'subscriptionStatus', 'centerStatus',
+                 'trialStart', 'trialEnds',
+                 'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
+                 'currentPlan', 'billingCycle', 'paymentProvider',
+                 'subscriptionVersion', 'lastPaymentAt', 'ownerId'
+               ]))
+        // Scoped center admin may update non-billing fields (e.g. doctorCount).
+        || (isCenterAdminForCenter(centerId)
             && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
                  'subscriptionStatus', 'centerStatus',
                  'trialStart', 'trialEnds',
@@ -475,7 +601,7 @@ service cloud.firestore {
           && request.resource.data.isActive == true
           && !exists(/databases/$(database)/documents/medical_centers/$(centerId));
 
-        allow write: if isCenterOwner(centerId) || isAdmin();
+        allow write: if isCenterOwner(centerId) || isAdmin() || isCenterAdminForCenter(centerId);
       }
     }
 
@@ -565,13 +691,16 @@ service cloud.firestore {
       allow read: if isSignedIn()
         && (resource.data.doctorId == request.auth.uid
             || isCenterOwner(resource.data.centerId)
+            || isCenterAdminForCenter(resource.data.centerId)
             || isAdmin());
 
       allow create: if isDoctor()
         && request.resource.data.doctorId == request.auth.uid
         && request.resource.data.status == 'pending';
 
-      allow update: if isCenterOwner(resource.data.centerId) || isAdmin();
+      allow update: if isCenterOwner(resource.data.centerId)
+        || isCenterAdminForCenter(resource.data.centerId)
+        || isAdmin();
     }
 
 

@@ -16,6 +16,25 @@
         { "fieldPath": "doctorId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "center_join_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "appointments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "dateKey", "order": "ASCENDING" },
+        { "fieldPath": "appointmentAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

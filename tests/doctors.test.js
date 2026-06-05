@@ -11,9 +11,16 @@ beforeEach(async () => { await testEnv.clearFirestore(); await seedDatabase(test
 afterAll(async () => { await testEnv.cleanup(); });
 
 describe('doctors — reads', () => {
-  test('2.1 authenticated patient can read any doctor profile', async () => {
-    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+  test('2.1 doctor can read own doctor profile', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
     await assertSucceeds(getDoc(doc(db, 'doctors', 'uid_doctor1')));
+  });
+
+  test('2.1b patient cannot directly read a doctor profile (uses public_doctors instead)', async () => {
+    // Rules were tightened from isSignedIn() to block patient-side direct reads.
+    // Patients read safe projections from public_doctors/{uid} only.
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(getDoc(doc(db, 'doctors', 'uid_doctor1')));
   });
 });
 

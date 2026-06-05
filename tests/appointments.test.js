@@ -1,7 +1,7 @@
 'use strict';
 
 const { assertFails, assertSucceeds } = require('@firebase/rules-unit-testing');
-const { doc, getDoc, setDoc, updateDoc } = require('firebase/firestore');
+const { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } = require('firebase/firestore');
 const { createTestEnv, seedDatabase } = require('./helpers');
 
 let testEnv;
@@ -245,6 +245,103 @@ describe('appointments — creates (Path B: walk-in)', () => {
 // UPDATES
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CREATES — Phase 3: health snapshot validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('appointments — health snapshot (Phase 3)', () => {
+
+  test('APH-1 patient self-book with null patientHealthSnapshot is accepted', async () => {
+    // null = missing health profile. Path A rule: validHealthSnapshot(null) === true.
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'appointments', 'appt_aph1'), {
+        ...patientApptBase,
+        patientHealthSnapshot: null,
+        slotId: 'slot_aph1',
+      })
+    );
+  });
+
+  test('APH-2 patient self-book with a valid health snapshot is accepted', async () => {
+    // schemaVersion 1, no dateOfBirth → validHealthSnapshot returns true.
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'appointments', 'appt_aph2'), {
+        ...patientApptBase,
+        patientHealthSnapshot: {
+          ageAtAppointment: 34,
+          gender:           'male',
+          bloodType:        'O+',
+          allergies:        ['penicillin'],
+          chronicConditions:  [],
+          currentMedications: [],
+          schemaVersion:    1,
+          snapshotAt:       new Date(),
+        },
+        slotId: 'slot_aph2',
+      })
+    );
+  });
+
+  test('APH-3 patient booking with snapshot containing dateOfBirth is rejected', async () => {
+    // DOB must never be stored in an appointment document.
+    // validHealthSnapshot rejects any map whose keys include dateOfBirth.
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      setDoc(doc(db, 'appointments', 'appt_aph3'), {
+        ...patientApptBase,
+        patientHealthSnapshot: {
+          dateOfBirth:   new Date('1990-01-15'), // forbidden
+          gender:        'male',
+          schemaVersion: 1,
+        },
+        slotId: 'slot_aph3',
+      })
+    );
+  });
+
+  test('APH-4 patient booking with snapshot schemaVersion != 1 is rejected', async () => {
+    // validHealthSnapshot requires schemaVersion == 1.
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      setDoc(doc(db, 'appointments', 'appt_aph4'), {
+        ...patientApptBase,
+        patientHealthSnapshot: {
+          gender:        'male',
+          schemaVersion: 2,   // wrong version
+        },
+        slotId: 'slot_aph4',
+      })
+    );
+  });
+
+  test('APH-5 Path B (walk-in) booking with non-null snapshot is rejected', async () => {
+    // Reception has no access to patient_health_profiles.
+    // Path B rule enforces patientHealthSnapshot == null unconditionally.
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(
+      setDoc(doc(db, 'appointments', 'appt_aph5'), {
+        ...walkInApptBase,
+        patientHealthSnapshot: { gender: 'male', schemaVersion: 1 },
+        slotId: 'slot_aph5',
+      })
+    );
+  });
+
+  test('APH-6 doctor cannot update patientHealthSnapshot after creation (immutable)', async () => {
+    // patientHealthSnapshot is in appointmentCoreUnchanged() — locked after write.
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'appointments', 'appt1'), {
+        patientHealthSnapshot: { gender: 'female', schemaVersion: 1 },
+      })
+    );
+  });
+
+});
+
+
 describe('appointments — updates', () => {
 
   test('4.17 doctor can update non-core fields (status)', async () => {
@@ -313,6 +410,165 @@ describe('appointments — updates', () => {
     const db = testEnv.authenticatedContext('uid_patient1').firestore();
     await assertFails(
       updateDoc(doc(db, 'appointments', 'appt1'), { paymentStatus: 'paid' })
+    );
+  });
+
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. doctors/{uid} — center admin read access (ManageDoctors tab)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('5. doctors/{uid} — center admin read access', () => {
+
+  test('5.1 patient cannot read a private doctor document', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(getDoc(doc(db, 'doctors', 'uid_doctor1')));
+  });
+
+  test('5.2 center admin (non-doctor) can read a doctor document', async () => {
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertSucceeds(getDoc(doc(db, 'doctors', 'uid_doctor1')));
+  });
+
+  test('5.3 center admin can list doctors by centerId (approvedDoctors query)', async () => {
+    // Seed a doctor doc with centerId so the query has a match.
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const { doc: d, setDoc: s } = require('firebase/firestore');
+      await s(d(ctx.firestore(), 'doctors', 'uid_doctor1'), { centerId: 'center1', name_en: 'Dr Ali' });
+    });
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertSucceeds(
+      getDocs(query(collection(db, 'doctors'), where('centerId', '==', 'center1')))
+    );
+  });
+
+  test('5.4 patient cannot list doctors by centerId', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      getDocs(query(collection(db, 'doctors'), where('centerId', '==', 'center1')))
+    );
+  });
+
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. approve join request flow — Firestore rules for each write
+// ─────────────────────────────────────────────────────────────────────────────
+describe('6. approve join request — individual write permissions', () => {
+
+  // ── doctors/{uid} link update ────────────────────────────────────────────
+
+  test('6.1 center owner can update doctor centerId/centerJoinStatus (link fields only)', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, 'doctors', 'uid_doctor2'), {
+        centerId: 'center1',
+        centerJoinStatus: 'approved',
+        centerJoinApprovedAt: new Date(),
+      })
+    );
+  });
+
+  test('6.2 center owner cannot update admin-protected fields on another doctor', async () => {
+    // uid_doctor2 seed has no canBook field, so setting it produces a real diff entry.
+    // isDoctorCenterLinkUpdate hasOnly check fails → the whole update is denied.
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'doctors', 'uid_doctor2'), {
+        centerId: 'center1',
+        centerJoinStatus: 'approved',
+        canBook: true,  // admin-protected field — must be rejected
+      })
+    );
+  });
+
+  test('6.3 patient cannot update doctor link fields', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'doctors', 'uid_doctor1'), {
+        centerId: 'center1',
+        centerJoinStatus: 'approved',
+        centerJoinApprovedAt: new Date(),
+      })
+    );
+  });
+
+  test('6.4 scoped center admin can update doctor link fields', async () => {
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, 'doctors', 'uid_doctor2'), {
+        centerId: 'center1',
+        centerJoinStatus: 'approved',
+        centerJoinApprovedAt: new Date(),
+      })
+    );
+  });
+
+  // ── center_join_requests update ───────────────────────────────────────────
+
+  test('6.5 center owner can update join request status to approved', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, 'center_join_requests', 'req1'), {
+        status: 'approved',
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  test('6.6 scoped center admin can update join request status', async () => {
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, 'center_join_requests', 'req1'), {
+        status: 'approved',
+        updatedAt: new Date(),
+      })
+    );
+  });
+
+  test('6.7 patient cannot update a join request', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'center_join_requests', 'req1'), {
+        status: 'approved',
+      })
+    );
+  });
+
+  // ── medical_centers/members set ───────────────────────────────────────────
+
+  test('6.8 center owner can set a member doc for a doctor', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'medical_centers/center1/members', 'uid_doctor2'), {
+        uid: 'uid_doctor2',
+        role: 'doctor',
+        isActive: true,
+        joinedAt: new Date(),
+      })
+    );
+  });
+
+  test('6.9 scoped center admin can set a member doc', async () => {
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertSucceeds(
+      setDoc(doc(db, 'medical_centers/center1/members', 'uid_doctor2'), {
+        uid: 'uid_doctor2',
+        role: 'doctor',
+        isActive: true,
+        joinedAt: new Date(),
+      })
+    );
+  });
+
+  test('6.10 patient cannot set a member doc', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(
+      setDoc(doc(db, 'medical_centers/center1/members', 'uid_doctor2'), {
+        uid: 'uid_doctor2',
+        role: 'doctor',
+        isActive: true,
+      })
     );
   });
 

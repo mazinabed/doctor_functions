@@ -28,10 +28,12 @@ async function seedDatabase(testEnv) {
     const db = context.firestore();
 
     // users
-    await setDoc(doc(db, 'users', 'uid_admin'),    { role: 'admin' });
-    await setDoc(doc(db, 'users', 'uid_patient1'), { role: 'patient', phone: '07701234567' });
-    await setDoc(doc(db, 'users', 'uid_doctor1'),  { role: 'doctor' });
-    await setDoc(doc(db, 'users', 'uid_doctor2'),  { role: 'doctor' });
+    await setDoc(doc(db, 'users', 'uid_admin'),        { role: 'admin' });
+    await setDoc(doc(db, 'users', 'uid_patient1'),     { role: 'patient', phone: '07701234567' });
+    await setDoc(doc(db, 'users', 'uid_doctor1'),      { role: 'doctor' });
+    await setDoc(doc(db, 'users', 'uid_doctor2'),      { role: 'doctor' });
+    // Non-doctor center admin: centerRole='center_admin', no doctors/{uid} doc.
+    await setDoc(doc(db, 'users', 'uid_center_admin'), { role: 'receptionist', centerRole: 'center_admin', centerId: 'center1' });
 
     // doctors
     await setDoc(doc(db, 'doctors', 'uid_doctor1'), {
@@ -61,6 +63,11 @@ async function seedDatabase(testEnv) {
     await setDoc(doc(db, 'medical_centers/center1/members', 'uid_doctor2'), {
       uid: 'uid_doctor2',
       role: 'receptionist',
+      isActive: true,
+    });
+    await setDoc(doc(db, 'medical_centers/center1/members', 'uid_center_admin'), {
+      uid: 'uid_center_admin',
+      role: 'center_admin',
       isActive: true,
     });
 
