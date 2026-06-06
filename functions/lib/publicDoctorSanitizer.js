@@ -85,9 +85,9 @@ function buildPublicDoc(doctorId, data, existingPublicData) {
     about_en:        data.about_en || data.bio_en || data.about  || "",
     about_ar:        data.about_ar || data.bio_ar || data.about  || "",
     about_ku:        data.about_ku || data.bio_ku || data.about  || "",
-    experienceYears: typeof data.experienceYears === "number"
-      ? data.experienceYears
-      : typeof data.yearsOfExperience === "number" ? data.yearsOfExperience : null,
+    experienceYears: typeof data.yearsOfExperience === "number"
+      ? data.yearsOfExperience
+      : typeof data.experienceYears === "number" ? data.experienceYears : null,
     languages: Array.isArray(data.languages) ? data.languages : [],
 
     // ── Location ─────────────────────────────────────────────────────────────
