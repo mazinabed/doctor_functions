@@ -76,6 +76,20 @@ service cloud.firestore {
         && userDoc.get('centerId', '') == centerId;
     }
 
+    // Center admin via members subcollection — source of truth for billing access.
+    // Reads medical_centers/{centerId}/members/{uid} directly; more reliable than
+    // users.centerRole which may be absent for some doctor-owned center members.
+    // centerId null-guard prevents path-building errors on documents without centerId.
+    // exists() guard prevents null-access when the member doc is absent.
+    function isCenterAdminMember(centerId) {
+      return isSignedIn()
+        && centerId is string
+        && centerId.size() > 0
+        && exists(/databases/$(database)/documents/medical_centers/$(centerId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/medical_centers/$(centerId)/members/$(request.auth.uid)).data.get('role', '') == 'center_admin'
+        && get(/databases/$(database)/documents/medical_centers/$(centerId)/members/$(request.auth.uid)).data.get('isActive', false) == true;
+    }
+
     // Center owner OR scoped center admin may update exactly the three
     // doctor-to-center link fields (centerId, centerJoinStatus, centerJoinApprovedAt).
     // Approve flow: centerId is being set — verifies ownership/admin of the new center.
@@ -581,7 +595,13 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /medical_centers/{centerId} {
-      allow read: if resource.data.isActive == true;
+      // Active centers: public read (no auth required) — used for center discovery.
+      // Owner/member: can read even when isActive == false (e.g. billing page on inactive center).
+      // resource == null: allow GET on non-existent docs (returns exists=false, not permission-denied).
+      allow read: if resource == null
+        || resource.data.get('isActive', false) == true
+        || (isSignedIn() && resource.data.ownerId == request.auth.uid)
+        || (isSignedIn() && isCenterMember(centerId));
 
       // Billing fields permitted on creation (doctor sets up initial trial).
       // These same fields are blocked from updates by the owner below.
@@ -651,9 +671,10 @@ service cloud.firestore {
         && (resource == null
             || resource.data.uid == request.auth.uid
             || resource.data.userId == request.auth.uid
-            || (resource.data.centerId is string
-                && resource.data.centerId.size() > 0
-                && isCenterOwner(resource.data.centerId))
+            || (resource.data.get('centerId', null) is string
+                && resource.data.get('centerId', '').size() > 0
+                && (isCenterOwner(resource.data.get('centerId', ''))
+                    || isCenterAdminMember(resource.data.get('centerId', ''))))
             || isAdmin());
 
       allow create: if isSignedIn()

@@ -147,9 +147,43 @@ async function seedDatabase(testEnv) {
       createdAt:       new Date(),
     });
 
+    // billing_center: isolated center for payment read rule tests (6.6–6.9).
+    // uid_billing_owner  = center owner (ownerId field).
+    // uid_billing_admin  = non-owner center_admin in members subcollection (the regression case).
+    // uid_billing_receptionist = receptionist — must be blocked from billing reads.
+    await setDoc(doc(db, 'users', 'uid_billing_owner'),        { role: 'doctor' });
+    await setDoc(doc(db, 'users', 'uid_billing_admin'),        { role: 'doctor' });
+    await setDoc(doc(db, 'users', 'uid_billing_receptionist'), { role: 'doctor' });
+    await setDoc(doc(db, 'medical_centers', 'billing_center'), {
+      ownerId: 'uid_billing_owner',
+      isActive: true,
+      name_en: 'Billing Test Center',
+      trialEnds: FUTURE,
+    });
+    await setDoc(doc(db, 'medical_centers/billing_center/members', 'uid_billing_owner'), {
+      uid: 'uid_billing_owner',
+      role: 'center_admin',
+      isActive: true,
+    });
+    await setDoc(doc(db, 'medical_centers/billing_center/members', 'uid_billing_admin'), {
+      uid: 'uid_billing_admin',
+      role: 'center_admin',
+      isActive: true,
+    });
+    await setDoc(doc(db, 'medical_centers/billing_center/members', 'uid_billing_receptionist'), {
+      uid: 'uid_billing_receptionist',
+      role: 'receptionist',
+      isActive: true,
+    });
+
     // payments
     await setDoc(doc(db, 'payments', 'pay1'), {
       userId: 'uid_doctor1',
+      status: 'pending',
+    });
+    await setDoc(doc(db, 'payments', 'pay_billing_center'), {
+      userId: 'uid_billing_owner',
+      centerId: 'billing_center',
       status: 'pending',
     });
 

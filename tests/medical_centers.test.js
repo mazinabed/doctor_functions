@@ -11,9 +11,48 @@ beforeEach(async () => { await testEnv.clearFirestore(); await seedDatabase(test
 afterAll(async () => { await testEnv.cleanup(); });
 
 describe('medical_centers — reads', () => {
-  test('5.1 any authenticated user can read a center', async () => {
+  test('5.1 any authenticated user can read an active center', async () => {
     const db = testEnv.authenticatedContext('uid_patient1').firestore();
     await assertSucceeds(getDoc(doc(db, 'medical_centers', 'center1')));
+  });
+
+  test('5.1b center owner can read their inactive center', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'medical_centers', 'center_inactive'), {
+        ownerId: 'uid_doctor1', isActive: false, name_en: 'Inactive Center',
+      });
+    });
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertSucceeds(getDoc(doc(db, 'medical_centers', 'center_inactive')));
+  });
+
+  test('5.1c center member can read their inactive center', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await setDoc(doc(db, 'medical_centers', 'center_inactive'), {
+        ownerId: 'uid_doctor1', isActive: false, name_en: 'Inactive Center',
+      });
+      await setDoc(doc(db, 'medical_centers/center_inactive/members', 'uid_doctor2'), {
+        uid: 'uid_doctor2', role: 'receptionist', isActive: true,
+      });
+    });
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertSucceeds(getDoc(doc(db, 'medical_centers', 'center_inactive')));
+  });
+
+  test('5.1d unrelated user cannot read an inactive center', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'medical_centers', 'center_inactive'), {
+        ownerId: 'uid_doctor1', isActive: false, name_en: 'Inactive Center',
+      });
+    });
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(getDoc(doc(db, 'medical_centers', 'center_inactive')));
+  });
+
+  test('5.1e GET on a non-existent center doc returns not-found, not permission-denied', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertSucceeds(getDoc(doc(db, 'medical_centers', 'nonexistent_center_xyz')));
   });
 });
 
