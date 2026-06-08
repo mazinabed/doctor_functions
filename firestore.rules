@@ -180,6 +180,20 @@ service cloud.firestore {
         ]);
     }
 
+    // Detects whether a write touches the accountLifecycle sub-object.
+    // Used to block client-side lifecycle writes — only Cloud Functions (admin SDK)
+    // may write accountLifecycle. Admin SDK bypasses rules entirely.
+    //
+    // For creates (resource == null): check if accountLifecycle appears in the
+    // new document's keys. diff() requires a non-null resource so cannot be used.
+    // For updates (resource != null): check if accountLifecycle is in the diff.
+    function touchesLifecycle() {
+      return resource == null
+        ? request.resource.data.keys().hasAny(['accountLifecycle'])
+        : request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['accountLifecycle']);
+    }
+
     // Core identity fields on an appointment that must never change after creation.
     // patientHealthSnapshot is immutable — health context is fixed at booking time.
     function appointmentCoreUnchanged() {
@@ -278,11 +292,14 @@ service cloud.firestore {
         && (!request.resource.data.keys().hasAny(['role'])
             || request.resource.data.role != 'admin');
 
-      allow update: if isAdmin()
-        || (isSignedIn()
-            && request.auth.uid == uid
-            && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])
-                || request.resource.data.role != 'admin'));
+      // accountLifecycle is controlled exclusively by Cloud Functions (admin SDK).
+      // No client path — including admin portal — may write this sub-object.
+      allow update: if !touchesLifecycle()
+        && (isAdmin()
+            || (isSignedIn()
+                && request.auth.uid == uid
+                && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])
+                    || request.resource.data.role != 'admin')));
     }
 
 
@@ -309,13 +326,15 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.auth.uid == uid;
 
-      allow update: if isAdmin()
-        || (isSignedIn()
-            && request.auth.uid == uid
-            && !touchesDoctorAdminFields())
-        // Center owner or scoped center admin may link/unlink a doctor during
-        // the join-request approve and remove flows (ManageDoctors tab).
-        || isDoctorCenterLinkUpdate();
+      // accountLifecycle is controlled exclusively by Cloud Functions (admin SDK).
+      allow update: if !touchesLifecycle()
+        && (isAdmin()
+            || (isSignedIn()
+                && request.auth.uid == uid
+                && !touchesDoctorAdminFields())
+            // Center owner or scoped center admin may link/unlink a doctor during
+            // the join-request approve and remove flows (ManageDoctors tab).
+            || isDoctorCenterLinkUpdate());
 
 
       // ── doctors/{uid}/reviews ──────────────────────────────────────────
@@ -608,25 +627,27 @@ service cloud.firestore {
       allow create: if isDoctor()
         && request.resource.data.ownerId == request.auth.uid;
 
-      allow update: if isAdmin()
-        || (isSignedIn()
-            && resource.data.ownerId == request.auth.uid
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-                 'subscriptionStatus', 'centerStatus',
-                 'trialStart', 'trialEnds',
-                 'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
-                 'currentPlan', 'billingCycle', 'paymentProvider',
-                 'subscriptionVersion', 'lastPaymentAt', 'ownerId'
-               ]))
-        // Scoped center admin may update non-billing fields (e.g. doctorCount).
-        || (isCenterAdminForCenter(centerId)
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-                 'subscriptionStatus', 'centerStatus',
-                 'trialStart', 'trialEnds',
-                 'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
-                 'currentPlan', 'billingCycle', 'paymentProvider',
-                 'subscriptionVersion', 'lastPaymentAt', 'ownerId'
-               ]));
+      // accountLifecycle is controlled exclusively by Cloud Functions (admin SDK).
+      allow update: if !touchesLifecycle()
+        && (isAdmin()
+            || (isSignedIn()
+                && resource.data.ownerId == request.auth.uid
+                && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                     'subscriptionStatus', 'centerStatus',
+                     'trialStart', 'trialEnds',
+                     'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
+                     'currentPlan', 'billingCycle', 'paymentProvider',
+                     'subscriptionVersion', 'lastPaymentAt', 'ownerId'
+                   ]))
+            // Scoped center admin may update non-billing fields (e.g. doctorCount).
+            || (isCenterAdminForCenter(centerId)
+                && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                     'subscriptionStatus', 'centerStatus',
+                     'trialStart', 'trialEnds',
+                     'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
+                     'currentPlan', 'billingCycle', 'paymentProvider',
+                     'subscriptionVersion', 'lastPaymentAt', 'ownerId'
+                   ])));
 
 
       // ── medical_centers/{centerId}/members/{uid} ───────────────────────
@@ -653,8 +674,36 @@ service cloud.firestore {
           && request.resource.data.isActive == true
           && !exists(/databases/$(database)/documents/medical_centers/$(centerId));
 
-        allow write: if isCenterOwner(centerId) || isAdmin() || isCenterAdminForCenter(centerId);
+        // accountLifecycle on member documents is controlled by lifecycle Cloud Functions only.
+        allow write: if !touchesLifecycle()
+          && (isCenterOwner(centerId) || isAdmin() || isCenterAdminForCenter(centerId));
       }
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // account_deletion_log/{eventId}
+    //
+    // Compliance audit trail — 7-year retention.
+    // Written exclusively by lifecycle Cloud Functions via admin SDK.
+    // No client read or write permitted.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /account_deletion_log/{eventId} {
+      allow read, write: if false;
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // account_deletion_requests/{requestId}
+    //
+    // Analytics and support layer — 3-year retention, aggregate-and-purge after 3 years.
+    // Written exclusively by lifecycle Cloud Functions via admin SDK.
+    // No client read or write permitted.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /account_deletion_requests/{requestId} {
+      allow read, write: if false;
     }
 
 

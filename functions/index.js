@@ -1951,3 +1951,20 @@ exports.expireCenters = expireCenters;
 
 const { scheduleDailyHealthWeather } = require("./scheduleDailyHealthWeather");
 exports.scheduleDailyHealthWeather = scheduleDailyHealthWeather;
+
+// ─── Account Lifecycle Domain ──────────────────────────────────────────────────
+const { requestAccountDeletion } = require("./lifecycle/requestAccountDeletion");
+const { restoreAccount } = require("./lifecycle/restoreAccount");
+const { requestCenterClosure } = require("./lifecycle/requestCenterClosure");
+const { processScheduledDeletions } = require("./lifecycle/processScheduledDeletions");
+const { processScheduledCenterClosures } = require("./lifecycle/processScheduledCenterClosures");
+const { adminPlaceLegalHold } = require("./lifecycle/adminPlaceLegalHold");
+const { adminForceDeletion } = require("./lifecycle/adminForceDeletion");
+
+exports.requestAccountDeletion = requestAccountDeletion;
+exports.restoreAccount = restoreAccount;
+exports.requestCenterClosure = requestCenterClosure;
+exports.processScheduledDeletions = processScheduledDeletions;
+exports.processScheduledCenterClosures = processScheduledCenterClosures;
+exports.adminPlaceLegalHold = adminPlaceLegalHold;
+exports.adminForceDeletion = adminForceDeletion;

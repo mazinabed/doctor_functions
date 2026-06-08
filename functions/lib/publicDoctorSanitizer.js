@@ -1,6 +1,7 @@
 "use strict";
 
 const admin = require("firebase-admin");
+const { isDoctorPubliclyEligible } = require("../lifecycle/lifecycleEligibility");
 
 // ─── Search token builder ─────────────────────────────────────────────────────
 function buildSearchTokens(values) {
@@ -16,9 +17,12 @@ function buildSearchTokens(values) {
 
 // ─── Eligibility ──────────────────────────────────────────────────────────────
 // Fail-closed. Any ambiguity → do not publish.
+// Lifecycle check is delegated to lifecycleEligibility — that module owns the rule.
 
 function isPublicEligible(data) {
   if (!data) return false;
+  // Lifecycle gate: doctors in deletionPending/deleted/archived must not appear in public_doctors.
+  if (!isDoctorPubliclyEligible(data)) return false;
   if (data.status !== "active") return false;
   // isActive absent = OK; explicitly false = not eligible
   if (data.isActive === false) return false;

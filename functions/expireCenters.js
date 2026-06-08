@@ -44,6 +44,15 @@ exports.expireCenters = onSchedule(
     for (const docSnap of snap.docs) {
       const data = docSnap.data();
 
+      // Skip centers in lifecycle-terminal states — subscription sync is irrelevant
+      // for centers that are closing or have been archived.
+      const lifecycleStatus = data.accountLifecycle?.status;
+      if (lifecycleStatus && ['closurePending', 'closed', 'archived'].includes(lifecycleStatus)) {
+        console.log(`expireCenters: skipped ${docSnap.id} — lifecycle status=${lifecycleStatus}`);
+        skipped++;
+        continue;
+      }
+
       // Log malformed docs that have no date fields at all.
       const hasAnyDate = data.trialEnds || data.subscriptionEnd || data.gracePeriodEnds;
       if (!hasAnyDate) {

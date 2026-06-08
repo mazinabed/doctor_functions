@@ -65,6 +65,38 @@
         { "fieldPath": "city_en", "order": "ASCENDING" },
         { "fieldPath": "name_ku_lower", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "accountLifecycle.status", "order": "ASCENDING" },
+        { "fieldPath": "accountLifecycle.scheduledDeletionAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "doctors",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "accountLifecycle.status", "order": "ASCENDING" },
+        { "fieldPath": "accountLifecycle.scheduledDeletionAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "medical_centers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "accountLifecycle.status", "order": "ASCENDING" },
+        { "fieldPath": "accountLifecycle.scheduledClosureAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "accountLifecycle.status", "order": "ASCENDING" },
+        { "fieldPath": "accountLifecycle.authDeletionFailed", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
