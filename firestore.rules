@@ -311,7 +311,7 @@ service cloud.firestore {
         allow update: if isSignedIn()
                       && request.auth.uid == uid
                       && request.resource.data.diff(resource.data)
-                           .affectedKeys().hasOnly(['isRead']);
+                           .affectedKeys().hasOnly(['isRead', 'dismissed', 'dismissedAt']);
         allow create: if false;
         allow delete: if false;
       }
