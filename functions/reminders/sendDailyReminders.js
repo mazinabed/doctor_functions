@@ -13,11 +13,14 @@
  *     otherwise patientId
  *   - Deterministic doc ID: reminder_{appointmentId}_{subtype}
  *     — existence check prevents duplicates on re-runs
+ *   - After writing a NEW notification doc, fans out FCM push to stored device tokens
+ *   - FCM failure is non-fatal — the Firestore notification is always written first
  *   - Admin SDK bypasses Firestore security rules
  */
 
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getMessaging } = require('firebase-admin/messaging');
 
 const SKIP_STATUSES = new Set(['cancelled', 'completed']);
 
@@ -61,6 +64,89 @@ function buildContent(subtype, appt) {
     bodyKu: `نوبەتت لەگەڵ د. ${nameKu} بەیانییە.`,
   };
 }
+
+// ─── FCM fan-out ──────────────────────────────────────────────────────────────
+// Sends push notifications to all stored FCM tokens for a recipient.
+// Groups tokens by language so each device receives its preferred locale.
+// Cleans up invalid/expired tokens automatically.
+// Non-fatal: caller continues on any error.
+async function sendFcmPush(db, recipientUid, notifContent) {
+  const tokensSnap = await db
+    .collection('users')
+    .doc(recipientUid)
+    .collection('fcmTokens')
+    .get();
+
+  if (tokensSnap.empty) return { sent: 0, cleaned: 0 };
+
+  // Group token docs by language preference.
+  const byLang = {};
+  for (const doc of tokensSnap.docs) {
+    const { token, language } = doc.data();
+    if (!token) continue;
+    const lang = language || 'ar';
+    if (!byLang[lang]) byLang[lang] = [];
+    byLang[lang].push({ docId: doc.id, token });
+  }
+
+  const messaging = getMessaging();
+  const titleMap = { en: notifContent.titleEn, ar: notifContent.titleAr, ku: notifContent.titleKu };
+  const bodyMap  = { en: notifContent.bodyEn,  ar: notifContent.bodyAr,  ku: notifContent.bodyKu };
+
+  let sent = 0;
+  let cleaned = 0;
+
+  for (const [lang, tokenDocs] of Object.entries(byLang)) {
+    const title  = titleMap[lang]  || titleMap.ar;
+    const body   = bodyMap[lang]   || bodyMap.ar;
+    const tokens = tokenDocs.map((t) => t.token);
+
+    try {
+      const response = await messaging.sendEachForMulticast({
+        tokens,
+        notification: { title, body },
+        data: { appointmentId: notifContent.appointmentId || '' },
+        webpush: {
+          notification: {
+            icon:  '/icons/Icon-192.png',
+            badge: '/icons/Icon-192.png',
+          },
+        },
+      });
+
+      sent += response.successCount;
+
+      // Remove tokens that FCM reports as invalid or unregistered.
+      for (let i = 0; i < response.responses.length; i++) {
+        if (!response.responses[i].success) {
+          const code = response.responses[i].error && response.responses[i].error.code;
+          if (
+            code === 'messaging/registration-token-not-registered' ||
+            code === 'messaging/invalid-registration-token'
+          ) {
+            try {
+              await db
+                .collection('users')
+                .doc(recipientUid)
+                .collection('fcmTokens')
+                .doc(tokenDocs[i].docId)
+                .delete();
+              cleaned++;
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (e) {
+      console.error(
+        `sendFcmPush: multicast error for uid=${recipientUid} lang=${lang}: ${e.message}`,
+      );
+    }
+  }
+
+  return { sent, cleaned };
+}
+
+// ─── Scheduled function ───────────────────────────────────────────────────────
 
 exports.sendDailyReminders = onSchedule(
   { schedule: '0 6 * * *', timeZone: 'UTC' },
@@ -153,6 +239,27 @@ exports.sendDailyReminders = onSchedule(
         });
 
         created++;
+
+        // Fan out FCM push — non-fatal; Firestore notification already written.
+        try {
+          const fcm = await sendFcmPush(db, recipientUid, {
+            appointmentId,
+            titleEn: content.titleEn,
+            titleAr: content.titleAr,
+            titleKu: content.titleKu,
+            bodyEn: content.bodyEn,
+            bodyAr: content.bodyAr,
+            bodyKu: content.bodyKu,
+          });
+          console.log(
+            `sendDailyReminders [${subtype}]: fcm appt=${appointmentId}` +
+            ` sent=${fcm.sent} cleaned=${fcm.cleaned}`,
+          );
+        } catch (e) {
+          console.error(
+            `sendDailyReminders [${subtype}]: fcm non-fatal appt=${appointmentId}: ${e.message}`,
+          );
+        }
       }
     }
 

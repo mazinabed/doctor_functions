@@ -315,6 +315,14 @@ service cloud.firestore {
         allow create: if false;
         allow delete: if false;
       }
+
+      // ── users/{uid}/fcmTokens ──────────────────────────────────────────────
+      // FCM push tokens — one doc per device, managed by the patient app.
+      // Cloud Functions use Admin SDK (bypass rules) for stale-token cleanup.
+      // Patient may read/create/update/delete only their own token docs.
+      match /fcmTokens/{tokenId} {
+        allow read, write: if isSignedIn() && request.auth.uid == uid;
+      }
     }
 
 

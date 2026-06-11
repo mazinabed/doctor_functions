@@ -22,8 +22,84 @@
 
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
+const { getMessaging } = require('firebase-admin/messaging');
 
 const SKIP_STATUSES = new Set(['cancelled', 'completed']);
+
+// ─── FCM fan-out ──────────────────────────────────────────────────────────────
+async function sendFcmPush(db, recipientUid, notifContent) {
+  const tokensSnap = await db
+    .collection('users')
+    .doc(recipientUid)
+    .collection('fcmTokens')
+    .get();
+
+  if (tokensSnap.empty) return { sent: 0, cleaned: 0 };
+
+  const byLang = {};
+  for (const doc of tokensSnap.docs) {
+    const { token, language } = doc.data();
+    if (!token) continue;
+    const lang = language || 'ar';
+    if (!byLang[lang]) byLang[lang] = [];
+    byLang[lang].push({ docId: doc.id, token });
+  }
+
+  const messaging = getMessaging();
+  const titleMap = { en: notifContent.titleEn, ar: notifContent.titleAr, ku: notifContent.titleKu };
+  const bodyMap  = { en: notifContent.bodyEn,  ar: notifContent.bodyAr,  ku: notifContent.bodyKu };
+
+  let sent = 0;
+  let cleaned = 0;
+
+  for (const [lang, tokenDocs] of Object.entries(byLang)) {
+    const title  = titleMap[lang]  || titleMap.ar;
+    const body   = bodyMap[lang]   || bodyMap.ar;
+    const tokens = tokenDocs.map((t) => t.token);
+
+    try {
+      const response = await messaging.sendEachForMulticast({
+        tokens,
+        notification: { title, body },
+        data: { appointmentId: notifContent.appointmentId || '' },
+        webpush: {
+          notification: {
+            icon:  '/icons/Icon-192.png',
+            badge: '/icons/Icon-192.png',
+          },
+        },
+      });
+
+      sent += response.successCount;
+
+      for (let i = 0; i < response.responses.length; i++) {
+        if (!response.responses[i].success) {
+          const code = response.responses[i].error && response.responses[i].error.code;
+          if (
+            code === 'messaging/registration-token-not-registered' ||
+            code === 'messaging/invalid-registration-token'
+          ) {
+            try {
+              await db
+                .collection('users')
+                .doc(recipientUid)
+                .collection('fcmTokens')
+                .doc(tokenDocs[i].docId)
+                .delete();
+              cleaned++;
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (e) {
+      console.error(
+        `sendFcmPush: multicast error for uid=${recipientUid} lang=${lang}: ${e.message}`,
+      );
+    }
+  }
+
+  return { sent, cleaned };
+}
 
 exports.sendSameDayReminders = onSchedule(
   { schedule: '0 * * * *', timeZone: 'UTC' },
@@ -102,6 +178,27 @@ exports.sendSameDayReminders = onSchedule(
       });
 
       created++;
+
+      // Fan out FCM push — non-fatal; Firestore notification already written.
+      try {
+        const fcm = await sendFcmPush(db, recipientUid, {
+          appointmentId,
+          titleEn: 'Appointment in About 2 Hours',
+          titleAr: 'موعدك بعد ساعتين تقريباً',
+          titleKu: 'نوبەتت لە نزیکەی ٢ کاتژمێردا',
+          bodyEn: `Your appointment with Dr. ${nameEn} starts in approximately 2 hours.`,
+          bodyAr: `موعدك مع الدكتور ${nameAr} يبدأ بعد ساعتين تقريباً.`,
+          bodyKu: `نوبەتت لەگەڵ د. ${nameKu} لە نزیکەی ٢ کاتژمێردا دەستپێدەکات.`,
+        });
+        console.log(
+          `sendSameDayReminders: fcm appt=${appointmentId}` +
+          ` sent=${fcm.sent} cleaned=${fcm.cleaned}`,
+        );
+      } catch (e) {
+        console.error(
+          `sendSameDayReminders: fcm non-fatal appt=${appointmentId}: ${e.message}`,
+        );
+      }
     }
 
     console.log(
