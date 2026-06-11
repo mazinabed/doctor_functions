@@ -300,6 +300,21 @@ service cloud.firestore {
                 && request.auth.uid == uid
                 && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])
                     || request.resource.data.role != 'admin')));
+
+      // ── users/{uid}/notifications ──────────────────────────────────────────
+      // Appointment reminder notifications written by Cloud Functions (Admin SDK).
+      // Patient reads own subcollection only.
+      // Patient may flip isRead — no other field may be changed from the client.
+      // create/delete are always false: only Cloud Functions write these docs.
+      match /notifications/{notifId} {
+        allow read:   if isSignedIn() && request.auth.uid == uid;
+        allow update: if isSignedIn()
+                      && request.auth.uid == uid
+                      && request.resource.data.diff(resource.data)
+                           .affectedKeys().hasOnly(['isRead']);
+        allow create: if false;
+        allow delete: if false;
+      }
     }
 
 

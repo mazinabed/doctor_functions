@@ -1968,3 +1968,10 @@ exports.processScheduledDeletions = processScheduledDeletions;
 exports.processScheduledCenterClosures = processScheduledCenterClosures;
 exports.adminPlaceLegalHold = adminPlaceLegalHold;
 exports.adminForceDeletion = adminForceDeletion;
+
+// ─── Appointment Reminder Domain ───────────────────────────────────────────────
+const { sendDailyReminders } = require('./reminders/sendDailyReminders');
+const { sendSameDayReminders } = require('./reminders/sendSameDayReminders');
+
+exports.sendDailyReminders = sendDailyReminders;
+exports.sendSameDayReminders = sendSameDayReminders;
