@@ -97,6 +97,17 @@
         { "fieldPath": "accountLifecycle.status", "order": "ASCENDING" },
         { "fieldPath": "accountLifecycle.authDeletionFailed", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "appointments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "patientId",          "order": "ASCENDING" },
+        { "fieldPath": "patientIdentityKey", "order": "ASCENDING" },
+        { "fieldPath": "doctorId",           "order": "ASCENDING" },
+        { "fieldPath": "dateKey",            "order": "ASCENDING" },
+        { "fieldPath": "status",             "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
