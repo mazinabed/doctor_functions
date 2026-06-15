@@ -108,6 +108,14 @@
         { "fieldPath": "dateKey",            "order": "ASCENDING" },
         { "fieldPath": "status",             "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "slot_locks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId", "order": "ASCENDING" },
+        { "fieldPath": "dateKey",  "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

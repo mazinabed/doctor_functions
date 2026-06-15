@@ -500,6 +500,57 @@ service cloud.firestore {
 
 
     // ───────────────────────────────────────────────────────────────────────
+    // slot_locks/{slotId}
+    //
+    // Transient availability records — one per booked slot.
+    // Created atomically with the appointment document at booking time.
+    // Deleted atomically with the appointment status update at cancellation.
+    //
+    // SlotId format: '{scheduleId}_{slotStartAt.millisecondsSinceEpoch}'
+    //
+    // Presence  → slot is occupied.
+    // Absence   → slot is available.
+    //
+    // Required fields written at create time:
+    //   appointmentId — UUID of the linked appointment document
+    //   centerId      — center scope (used for member permission check + index)
+    //   dateKey       — YYYY-MM-DD (used for getBookedSlotIds index query)
+    //   lockedBy      — request.auth.uid of the booking actor
+    //   lockedAt      — FieldValue.serverTimestamp()
+    //
+    // Read:   any signed-in user — the booking transaction must read
+    //         slot_locks/{slotId} to check availability before writing.
+    // Create: any signed-in user who identifies themselves as the locker
+    //         (lockedBy == auth.uid). Covers both patient self-booking and
+    //         center-staff booking; appointment creation rules enforce the
+    //         deeper source / role / ownership constraints atomically.
+    // Delete: the original lock creator (lockedBy == auth.uid), any active
+    //         center member for that center, or admin.
+    //         All cancellation surfaces delete the lock in the same batch/
+    //         transaction as the appointment status update.
+    // Update: never — locks are created and deleted only, not mutated.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /slot_locks/{slotId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.lockedBy == request.auth.uid
+        && request.resource.data.centerId is string
+        && request.resource.data.centerId.size() > 0
+        && request.resource.data.appointmentId is string
+        && request.resource.data.dateKey is string;
+
+      allow delete: if isSignedIn()
+        && (resource.data.lockedBy == request.auth.uid
+            || isCenterMember(resource.data.centerId)
+            || isAdmin());
+
+      allow update: if false;
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
     // patient_visit_notes/{appointmentId}
     //
     // Document ID == appointmentId (deterministic: one note per appointment).
