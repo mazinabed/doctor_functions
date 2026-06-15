@@ -477,9 +477,10 @@ service cloud.firestore {
       allow update: if appointmentCoreUnchanged()
         && isPaymentStatusUpdate(resource.data.centerId);
 
-      // ── Patient: cancel own appointment only ──────────────────────────
+      // ── Patient: cancel own appointment only (pending or confirmed, not completed) ──
       allow update: if isSignedIn()
         && resource.data.patientId == request.auth.uid
+        && resource.data.status != 'completed'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'status', 'cancelledAt', 'updatedAt'
            ])
@@ -524,8 +525,13 @@ service cloud.firestore {
     //         (lockedBy == auth.uid). Covers both patient self-booking and
     //         center-staff booking; appointment creation rules enforce the
     //         deeper source / role / ownership constraints atomically.
-    // Delete: the original lock creator (lockedBy == auth.uid), any active
-    //         center member for that center, or admin.
+    // Delete: the original lock creator (lockedBy == auth.uid), the patient
+    //         who owns the linked appointment (enables patient-initiated
+    //         cancellation of reception-booked slots where lockedBy is staff),
+    //         any active center member for that center, or admin.
+    //         When resource == null the document does not exist; the delete is
+    //         a no-op (walk-in appointments and pre-Phase-1 appointments have
+    //         no slot_lock). Any signed-in user may safely attempt it.
     //         All cancellation surfaces delete the lock in the same batch/
     //         transaction as the appointment status update.
     // Update: never — locks are created and deleted only, not mutated.
@@ -542,7 +548,10 @@ service cloud.firestore {
         && request.resource.data.dateKey is string;
 
       allow delete: if isSignedIn()
-        && (resource.data.lockedBy == request.auth.uid
+        && (resource == null
+            || resource.data.lockedBy == request.auth.uid
+            || (resource.data.appointmentId is string
+                && get(/databases/$(database)/documents/appointments/$(resource.data.appointmentId)).data.patientId == request.auth.uid)
             || isCenterMember(resource.data.centerId)
             || isAdmin());
 
