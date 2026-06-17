@@ -1975,3 +1975,16 @@ const { sendSameDayReminders } = require('./reminders/sendSameDayReminders');
 
 exports.sendDailyReminders = sendDailyReminders;
 exports.sendSameDayReminders = sendSameDayReminders;
+
+// ─── Schedule Guard Domain ─────────────────────────────────────────────────────
+// Server-side enforcement for protected schedule operations.
+// All six functions use Firestore transactions to atomically validate
+// appointment conflicts before executing the schedule mutation.
+const scheduleGuard = require("./scheduleGuard");
+
+exports.guardUpdateShift    = scheduleGuard.guardUpdateShift;
+exports.guardDeleteShift    = scheduleGuard.guardDeleteShift;
+exports.guardDisableDay     = scheduleGuard.guardDisableDay;
+exports.guardClearDay       = scheduleGuard.guardClearDay;
+exports.guardResetWeek      = scheduleGuard.guardResetWeek;
+exports.guardPublishDrafts  = scheduleGuard.guardPublishDrafts;

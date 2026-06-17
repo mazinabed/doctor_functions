@@ -398,8 +398,13 @@ service cloud.firestore {
         && resource.data.doctorId == request.auth.uid
         && centerIsOperational(resource.data.centerId);
 
-      allow delete: if (isDoctor() && resource.data.doctorId == request.auth.uid)
-        || isAdmin();
+      // Client-side delete is only permitted for draft shifts.
+      // Published shifts are deleted exclusively by the guardPublishDrafts /
+      // guardDeleteShift / guardResetWeek / guardClearDay Cloud Functions
+      // (which use the Admin SDK and bypass these rules).
+      allow delete: if ((isDoctor() && resource.data.doctorId == request.auth.uid
+                         && resource.data.get('status', 'draft') != 'published')
+                        || isAdmin());
     }
 
 

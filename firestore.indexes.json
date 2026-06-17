@@ -116,6 +116,22 @@
         { "fieldPath": "centerId", "order": "ASCENDING" },
         { "fieldPath": "dateKey",  "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "appointments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "scheduleId",    "order": "ASCENDING" },
+        { "fieldPath": "appointmentAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "appointments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "doctorId",      "order": "ASCENDING" },
+        { "fieldPath": "appointmentAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
