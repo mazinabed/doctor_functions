@@ -132,6 +132,18 @@
         { "fieldPath": "doctorId",      "order": "ASCENDING" },
         { "fieldPath": "appointmentAt", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "schedules",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",            "order": "ASCENDING" },
+        { "fieldPath": "doctorId",            "order": "ASCENDING" },
+        { "fieldPath": "dayOfWeek",           "order": "ASCENDING" },
+        { "fieldPath": "status",              "order": "ASCENDING" },
+        { "fieldPath": "isActive",            "order": "ASCENDING" },
+        { "fieldPath": "visitType",           "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
