@@ -109,7 +109,14 @@ exports.guardUpdateShift = onCall(
   async ({ auth, data }) => {
     if (!auth) throw new Error("unauthenticated");
 
-    const { scheduleId, startTime, endTime, slotDurationMinutes, breaks } = data;
+    const {
+      scheduleId,
+      startTime,
+      endTime,
+      slotDurationMinutes,
+      breaks,
+      centerId: proposedCenterId,
+    } = data;
     if (!scheduleId || !startTime || !endTime) {
       throw new Error("invalid-argument: scheduleId, startTime, endTime required");
     }
@@ -135,6 +142,20 @@ exports.guardUpdateShift = onCall(
       }
 
       const futureAppts = await futureApptsForSchedule(scheduleId, tx);
+
+      // Center change check — runs before grid check because a location conflict
+      // is always blocking regardless of whether the appointment is on-grid.
+      if (
+        proposedCenterId &&
+        proposedCenterId !== schedule.centerId &&
+        futureAppts.length > 0
+      ) {
+        return {
+          blocked: true,
+          reason: "center_change_blocked",
+          conflicts: futureAppts.map(serializeConflict),
+        };
+      }
 
       if (futureAppts.length > 0) {
         const newShift = { ...schedule, ...proposedFields };
