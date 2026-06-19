@@ -107,18 +107,21 @@ service cloud.firestore {
     }
 
     // Center staff may mark an appointment unpaid → paid.
-    // All three audit fields must be co-written with paymentStatus; no other
-    // fields may change. The caller must be a member of the appointment's center.
+    // amountPaid and paymentMethod are required alongside the audit fields.
+    // receiptRef is optional — included in hasOnly so it may be written when present.
+    // No other fields may change. Caller must be a member of the appointment's center.
     function isPaymentStatusUpdate(centerId) {
       return isSignedIn()
         && isCenterMember(centerId)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'paymentStatus', 'paymentStatusUpdatedAt',
-             'paymentStatusUpdatedBy', 'updatedAt'
+             'paymentStatusUpdatedBy', 'updatedAt',
+             'amountPaid', 'paymentMethod', 'receiptRef'
            ])
         && resource.data.paymentStatus == 'unpaid'
         && request.resource.data.paymentStatus == 'paid'
-        && request.resource.data.paymentStatusUpdatedBy == request.auth.uid;
+        && request.resource.data.paymentStatusUpdatedBy == request.auth.uid
+        && request.resource.data.amountPaid > 0;
     }
 
     // Path B (reception/walk-in) may create as unpaid or pre-paid.
@@ -506,6 +509,45 @@ service cloud.firestore {
 
 
     // ───────────────────────────────────────────────────────────────────────
+    // paymentTransactions/{txId}
+    //
+    // Immutable financial event log.  One document per payment event.
+    // Written atomically with the appointment update via WriteBatch.
+    //
+    // Phase 1 — payment only.  Refund support is deferred; type == 'refund'
+    // is blocked here until a full refund UI + workflow is implemented.
+    //
+    // READ  — center members (own center only) or the patient on the record
+    // CREATE — center members only; type must be 'payment'; amount > 0
+    // UPDATE — permanently forbidden
+    // DELETE — permanently forbidden
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /paymentTransactions/{txId} {
+
+      allow read: if isSignedIn()
+        && (isCenterMember(resource.data.centerId)
+            || resource.data.patientId == request.auth.uid
+            || isAdmin());
+
+      allow create: if isSignedIn()
+        && isCenterMember(request.resource.data.centerId)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.status == 'completed'
+        && request.resource.data.amount > 0
+        && request.resource.data.currency == 'IQD'
+        && request.resource.data.type == 'payment'
+        && request.resource.data.chargeType in [
+             'consultation', 'lab', 'procedure',
+             'medication', 'pharmacy', 'other'
+           ];
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
     // slot_locks/{slotId}
     //
     // Transient availability records — one per booked slot.
@@ -749,10 +791,16 @@ service cloud.firestore {
       // The !exists() guard closes this path permanently once the center
       // is committed — no doctor can use it to join an existing center.
       match /members/{memberId} {
+        // resource.data.uid == request.auth.uid allows a signed-in user to
+        // query the collectionGroup for their own pending/active member doc
+        // before isCenterMember resolves (first-time staff login chicken-and-egg).
+        // The client query always constrains where('uid', ==, uid), so this
+        // only exposes the caller's own membership records.
         allow read: if isSignedIn()
           && (isCenterMember(centerId)
               || isCenterOwner(centerId)
-              || isAdmin());
+              || isAdmin()
+              || resource.data.uid == request.auth.uid);
 
         // Founder self-membership: own practice creation only.
         // !exists() is true only while the center has not been committed.
@@ -969,6 +1017,72 @@ service cloud.firestore {
     match /{path=**}/members/{memberId} {
       allow read: if isSignedIn()
         && resource.data.uid == request.auth.uid;
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Clinical Requests
+    //
+    // Doctors create requests scoped to their appointment.
+    // Staff (nurse/technician/receptionist) read and update requests
+    // scoped to their center only.
+    // Center admins have full read/write over their center.
+    // No patient-side access.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /clinical_requests/{requestId} {
+      // Shared helper: caller belongs to the request's center
+      function isRequestCenterMember() {
+        return isCenterMember(resource.data.centerId);
+      }
+
+      // Doctors may create a request for their own appointment at their center
+      allow create: if isSignedIn()
+        && request.resource.data.doctorId == request.auth.uid
+        && isCenterMember(request.resource.data.centerId);
+
+      // Staff and admins may read any request in their center
+      allow read: if isSignedIn() && isRequestCenterMember();
+
+      // Doctors may read requests they created (by doctorId)
+      allow read: if isSignedIn()
+        && resource.data.doctorId == request.auth.uid;
+
+      // Staff update: allowed fields are status, resultNote,
+      // completedByUid, completedByName, completedAt, claimedAt,
+      // cancelledAt, updatedAt
+      allow update: if isSignedIn()
+        && isRequestCenterMember()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'resultNote', 'completedByUid',
+                       'completedByName', 'completedAt', 'updatedAt',
+                       'claimedAt', 'cancelledAt']);
+
+      // Center admins may cancel (full update) or delete requests
+      allow update: if isSignedIn()
+        && isCenterAdminMember(resource.data.centerId);
+
+      allow delete: if isSignedIn()
+        && isCenterAdminMember(resource.data.centerId);
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Clinical Request Templates
+    //
+    // Center admins manage custom templates for their center.
+    // Staff and doctors may read templates for their center (to populate UI).
+    // System templates are Dart constants — no Firestore rule needed.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /clinical_request_templates/{templateId} {
+      allow read: if isSignedIn()
+        && isCenterMember(resource.data.centerId);
+
+      allow create: if isSignedIn()
+        && isCenterAdminMember(request.resource.data.centerId);
+
+      allow update, delete: if isSignedIn()
+        && isCenterAdminMember(resource.data.centerId);
     }
 
 

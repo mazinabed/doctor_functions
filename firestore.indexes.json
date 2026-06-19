@@ -144,6 +144,118 @@
         { "fieldPath": "isActive",            "order": "ASCENDING" },
         { "fieldPath": "visitType",           "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "paymentTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",        "order": "ASCENDING" },
+        { "fieldPath": "paymentDateKey",  "order": "ASCENDING" },
+        { "fieldPath": "status",          "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "paymentTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",         "order": "ASCENDING" },
+        { "fieldPath": "paymentMonthKey",  "order": "ASCENDING" },
+        { "fieldPath": "type",             "order": "ASCENDING" },
+        { "fieldPath": "status",           "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "paymentTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",         "order": "ASCENDING" },
+        { "fieldPath": "doctorId",         "order": "ASCENDING" },
+        { "fieldPath": "paymentMonthKey",  "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "uid",      "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "members",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "phoneNormalized", "order": "ASCENDING" },
+        { "fieldPath": "status",          "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "appointmentId", "order": "ASCENDING" },
+        { "fieldPath": "doctorId",      "order": "ASCENDING" },
+        { "fieldPath": "createdAt",     "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",      "order": "ASCENDING" },
+        { "fieldPath": "dateKey",       "order": "ASCENDING" },
+        { "fieldPath": "assignedRoles", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "createdAt",     "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",     "order": "ASCENDING" },
+        { "fieldPath": "dateKey",      "order": "ASCENDING" },
+        { "fieldPath": "assignedRole", "order": "ASCENDING" },
+        { "fieldPath": "status",       "order": "ASCENDING" },
+        { "fieldPath": "createdAt",    "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",  "order": "ASCENDING" },
+        { "fieldPath": "dateKey",   "order": "ASCENDING" },
+        { "fieldPath": "status",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",      "order": "ASCENDING" },
+        { "fieldPath": "dateKey",       "order": "DESCENDING" },
+        { "fieldPath": "assignedRoles", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "createdAt",     "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",  "order": "ASCENDING" },
+        { "fieldPath": "dateKey",   "order": "DESCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "centerId",  "order": "ASCENDING" },
+        { "fieldPath": "dateKey",   "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
