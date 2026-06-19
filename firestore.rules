@@ -853,6 +853,46 @@ service cloud.firestore {
               && resource.data.get('uid', '') != request.auth.uid
               && resource.data.get('role', '') != 'center_admin');
       }
+
+
+      // ── medical_centers/{centerId}/clinical_templates/{templateId} ────────
+      //
+      // Center-owned reusable clinical request templates (Phase 2B).
+      // 'single' templates have 1 item; 'bundle' templates have 2–10 items.
+      //
+      // READ:   any approved center member (doctor, nurse, receptionist).
+      // CREATE: center admin only. Enforces on creation:
+      //           - centerId matches path segment (no cross-center writes)
+      //           - isActive must be true
+      //           - createdBy must be the caller's uid
+      //           - version must be 1
+      //           - items must be non-empty and capped at 10
+      // UPDATE: center admin only. Immutable after creation:
+      //           centerId, createdBy, createdAt, version.
+      //         Archive via isActive=false; restore via isActive=true.
+      // DELETE: forbidden — archive only.
+      //
+      match /clinical_templates/{templateId} {
+        allow read: if isSignedIn() && isCenterMember(centerId);
+
+        allow create: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == centerId
+          && request.resource.data.isActive == true
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.version == 1
+          && request.resource.data.items.size() > 0
+          && request.resource.data.items.size() <= 10;
+
+        allow update: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == resource.data.centerId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.version == resource.data.version;
+
+        // No delete — archive via isActive = false (update path above)
+      }
     }
 
 
@@ -1102,25 +1142,6 @@ service cloud.firestore {
         && isCenterAdminMember(resource.data.centerId);
 
       allow delete: if isSignedIn()
-        && isCenterAdminMember(resource.data.centerId);
-    }
-
-    // ───────────────────────────────────────────────────────────────────────
-    // Clinical Request Templates
-    //
-    // Center admins manage custom templates for their center.
-    // Staff and doctors may read templates for their center (to populate UI).
-    // System templates are Dart constants — no Firestore rule needed.
-    // ───────────────────────────────────────────────────────────────────────
-
-    match /clinical_request_templates/{templateId} {
-      allow read: if isSignedIn()
-        && isCenterMember(resource.data.centerId);
-
-      allow create: if isSignedIn()
-        && isCenterAdminMember(request.resource.data.centerId);
-
-      allow update, delete: if isSignedIn()
         && isCenterAdminMember(resource.data.centerId);
     }
 
