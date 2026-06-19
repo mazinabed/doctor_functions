@@ -1124,6 +1124,19 @@ service cloud.firestore {
         && isCenterAdminMember(resource.data.centerId);
     }
 
+    // ───────────────────────────────────────────────────────────────────────
+    // Clinical Doctor Preferences
+    //
+    // Personal per-doctor document: favorites and recently used templates.
+    // Strictly doctor-owned — only the owning doctor may read or write.
+    // Document ID == doctorId == request.auth.uid.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /clinical_doctor_prefs/{doctorId} {
+      allow read, write: if isSignedIn()
+        && request.auth.uid == doctorId;
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // Intentionally unmatched collections (implicit deny):
