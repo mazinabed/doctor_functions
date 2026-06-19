@@ -781,38 +781,77 @@ service cloud.firestore {
 
 
       // ── medical_centers/{centerId}/members/{uid} ───────────────────────
-      // Read:  center members, the center owner, or admin
-      // Write: center owner or admin only (prevents doctors self-joining)
       //
-      // Founder exception: when a doctor creates their own practice, the
-      // medical_centers doc and this member doc are written in the same
-      // client transaction. Rule evaluation reads committed DB state, so
-      // the center doc does not exist yet → isCenterOwner returns false.
-      // The !exists() guard closes this path permanently once the center
-      // is committed — no doctor can use it to join an existing center.
+      // Authority model (Phase 4 hardening):
+      //   All write authority derives from isCenterAdminMember(centerId), which
+      //   reads the member doc directly and cannot be spoofed by editing
+      //   users/{uid}.centerRole (isCenterAdminForCenter was the old — weaker — check).
+      //
+      // Self-protection:  admins cannot modify their own member record.
+      // Target protection: center_admin records cannot be modified by client writes.
+      // Promotion block:  role cannot be changed to 'center_admin' from the client.
+      // Field restriction: updates are limited to operational fields.
+      //
       match /members/{memberId} {
-        // resource.data.uid == request.auth.uid allows a signed-in user to
-        // query the collectionGroup for their own pending/active member doc
-        // before isCenterMember resolves (first-time staff login chicken-and-egg).
-        // The client query always constrains where('uid', ==, uid), so this
-        // only exposes the caller's own membership records.
+        // READ: center members, owner, admin, or own record.
+        // resource.data.uid == request.auth.uid covers the collectionGroup
+        // startup query (first-login chicken-and-egg before isCenterMember resolves).
         allow read: if isSignedIn()
           && (isCenterMember(centerId)
               || isCenterOwner(centerId)
               || isAdmin()
               || resource.data.uid == request.auth.uid);
 
-        // Founder self-membership: own practice creation only.
-        // !exists() is true only while the center has not been committed.
+        // ── CREATE path 1: Founder self-membership ─────────────────────
+        // Allowed only while the parent center doc does not yet exist.
+        // !exists() guard permanently closes this path on committed centers.
         allow create: if isDoctor()
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.role == 'center_admin'
           && request.resource.data.isActive == true
           && !exists(/databases/$(database)/documents/medical_centers/$(centerId));
 
-        // accountLifecycle on member documents is controlled by lifecycle Cloud Functions only.
-        allow write: if !touchesLifecycle()
-          && (isCenterOwner(centerId) || isAdmin() || isCenterAdminForCenter(centerId));
+        // ── CREATE path 2: Staff invite + doctor join approval ─────────
+        // Requires isCenterAdminMember (member-doc authority — not users-doc).
+        // Cannot create a new center_admin via this path.
+        // accountLifecycle sub-object is Cloud Functions only.
+        allow create: if !touchesLifecycle()
+          && (isCenterOwner(centerId) || isCenterAdminMember(centerId))
+          && request.resource.data.get('role', '') != 'center_admin';
+
+        // ── UPDATE path 1: Scoped center admin ─────────────────────────
+        // Authority: isCenterAdminMember reads member doc directly.
+        //   Cannot be spoofed by editing users/{uid}.centerRole.
+        // Self-protection:  resource.data.uid != caller uid.
+        // Target protection: cannot update center_admin records.
+        // Promotion block:   cannot set role to center_admin.
+        // Field restriction: only operational fields may change.
+        allow update: if !touchesLifecycle()
+          && isCenterAdminMember(centerId)
+          && resource.data.get('uid', '') != request.auth.uid
+          && resource.data.get('role', '') != 'center_admin'
+          && request.resource.data.get('role', '') != 'center_admin'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'role', 'permissions', 'isActive', 'displayName',
+               'updatedAt', 'updatedBy',
+               'reactivatedBy', 'reactivatedAt', 'deactivatedBy', 'deactivatedAt'
+             ]);
+
+        // ── UPDATE path 2: Center owner or global admin ─────────────────
+        // Unrestricted — covers emergency fixes, migration scripts, and
+        // operations that span field restrictions (e.g. ownerId reassignment).
+        allow update: if !touchesLifecycle()
+          && (isCenterOwner(centerId) || isAdmin());
+
+        // ── DELETE ──────────────────────────────────────────────────────
+        // Center admin may cancel invitations and remove staff.
+        // Self-protection: admin cannot delete own member doc.
+        // Target protection: admin cannot delete other center_admin docs.
+        allow delete: if isCenterOwner(centerId)
+          || isAdmin()
+          || (isCenterAdminMember(centerId)
+              && resource.data.get('uid', '') != request.auth.uid
+              && resource.data.get('role', '') != 'center_admin');
       }
     }
 
