@@ -893,6 +893,70 @@ service cloud.firestore {
 
         // No delete — archive via isActive = false (update path above)
       }
+
+      // ── medical_centers/{centerId}/clinical_custom_categories/{categoryId} ─
+      //
+      // Center-owned custom service categories (Phase 2C).
+      //
+      // READ:   any approved center member.
+      // CREATE: center admin only. Enforces on creation:
+      //           - centerId matches path segment (no cross-center writes)
+      //           - isActive must be true
+      //           - createdBy must be the caller's uid
+      // UPDATE: center admin only. Immutable: centerId, createdBy, createdAt.
+      //         Archive via isActive=false; restore via isActive=true.
+      // DELETE: forbidden — archive only.
+      //
+      match /clinical_custom_categories/{categoryId} {
+        allow read: if isSignedIn() && isCenterMember(centerId);
+
+        allow create: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == centerId
+          && request.resource.data.isActive == true
+          && request.resource.data.createdBy == request.auth.uid;
+
+        allow update: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == resource.data.centerId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt;
+
+        // No delete — archive via isActive = false (update path above)
+      }
+
+      // ── medical_centers/{centerId}/clinical_custom_types/{typeId} ──────────
+      //
+      // Center-owned custom tests / sub-types (Phase 2C).
+      // categoryId accepts both custom category IDs and system category strings.
+      //
+      // READ:   any approved center member.
+      // CREATE: center admin only. Enforces on creation:
+      //           - centerId matches path segment (no cross-center writes)
+      //           - isActive must be true
+      //           - createdBy must be the caller's uid
+      // UPDATE: center admin only. Immutable: centerId, categoryId, createdBy, createdAt.
+      //         Archive via isActive=false; restore via isActive=true.
+      // DELETE: forbidden — archive only.
+      //
+      match /clinical_custom_types/{typeId} {
+        allow read: if isSignedIn() && isCenterMember(centerId);
+
+        allow create: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == centerId
+          && request.resource.data.isActive == true
+          && request.resource.data.createdBy == request.auth.uid;
+
+        allow update: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == resource.data.centerId
+          && request.resource.data.categoryId == resource.data.categoryId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt;
+
+        // No delete — archive via isActive = false (update path above)
+      }
     }
 
 
