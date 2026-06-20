@@ -1,0 +1,66 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TrustyDr Ecosystem — Firebase Storage Security Rules
+// Firebase project: doctorapp-7e8b3
+//
+// Buckets covered:
+//   clinical_attachments/{centerId}/{requestId}/{attachmentId}
+//     — clinical request file attachments (PDF, images, DICOM)
+//     — Doctor portal only; no patient-side write access in Phase 2A
+//
+//   centers/{centerId}/...
+//     — Center profile assets (logos, banners) — unchanged from prior rules
+// ═══════════════════════════════════════════════════════════════════════════
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Center profile assets ─────────────────────────────────────────────
+    // Logos, banners, and other center-scoped files managed by the portal.
+    // Read: public (displayed on patient app center listings).
+    // Write: any authenticated user (center admin uploading via portal).
+    // Note: path-level ownership enforcement is deferred; the center admin's
+    //       UI restricts which centerId they can write to via portal routing.
+    match /centers/{centerId}/{allPaths=**} {
+      allow read:  if true;
+      allow write: if request.auth != null;
+    }
+
+    // ── Clinical attachments ──────────────────────────────────────────────
+    // Path: clinical_attachments/{centerId}/{requestId}/{attachmentId}
+    //
+    // The attachmentId segment matches the Firestore subcollection doc ID
+    // (pre-generated before upload) so the Storage path and Firestore doc
+    // are deterministically linked without a secondary lookup.
+    //
+    // READ:   any authenticated user — Firestore rules enforce that the
+    //         caller may only discover the attachment path via the subcollection
+    //         stream, which is already center-member-gated.
+    //
+    // CREATE: authenticated + size ≤ 10 MB + accepted content type only.
+    //         Accepted types: PDF, JPEG, PNG, WebP, DICOM.
+    //         Firestore rules enforce center membership and field constraints
+    //         on the parallel metadata document write.
+    //
+    // DELETE: authenticated — soft-delete model; Storage objects are retained
+    //         until a future purge job runs. Physical deletion is Cloud Function
+    //         territory and bypasses these rules via Admin SDK.
+    //
+    // UPDATE: never — attachments are immutable objects; metadata updates
+    //         are Firestore-only (isDeleted, patientVisible fields).
+    match /clinical_attachments/{centerId}/{requestId}/{attachmentId} {
+      allow read:   if request.auth != null;
+
+      allow create: if request.auth != null
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType.matches(
+             'application/pdf|image/jpeg|image/png|image/webp|application/dicom');
+
+      allow delete: if request.auth != null;
+
+      allow update: if false;
+    }
+
+  }
+}

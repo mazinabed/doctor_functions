@@ -183,6 +183,13 @@ service cloud.firestore {
         ]);
     }
 
+    // Phase 2B: patient release of clinical results is doctor-only.
+    // Defined here so the helper name is available at all call sites.
+    // When multi-doctor or center-admin release is approved, expand this function.
+    function canReleaseClinicalResults(centerId) {
+      return isDoctor();
+    }
+
     // Detects whether a write touches the accountLifecycle sub-object.
     // Used to block client-side lifecycle writes — only Cloud Functions (admin SDK)
     // may write accountLifecycle. Admin SDK bypasses rules entirely.
@@ -1191,22 +1198,95 @@ service cloud.firestore {
       allow read: if isSignedIn()
         && resource.data.doctorId == request.auth.uid;
 
-      // Staff update: allowed fields are status, resultNote,
+      // Staff update: allowed fields are status, resultNote, resultItems,
       // completedByUid, completedByName, completedAt, claimedAt,
       // cancelledAt, updatedAt
       allow update: if isSignedIn()
         && isRequestCenterMember()
         && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['status', 'resultNote', 'completedByUid',
-                       'completedByName', 'completedAt', 'updatedAt',
+             .hasOnly(['status', 'resultNote', 'resultItems',
+                       'completedByUid', 'completedByName',
+                       'completedAt', 'updatedAt',
                        'claimedAt', 'cancelledAt']);
 
       // Center admins may cancel (full update) or delete requests
       allow update: if isSignedIn()
         && isCenterAdminMember(resource.data.centerId);
 
+      // Attachment counter update: ±1 only.
+      // The batch write that creates or soft-deletes an attachment document
+      // also updates attachmentCount on the parent. hasOnly prevents any
+      // other field from being changed in the same batch operation, and the
+      // arithmetic constraint prevents arbitrary counter manipulation.
+      allow update: if isSignedIn()
+        && isRequestCenterMember()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['attachmentCount', 'updatedAt'])
+        && (request.resource.data.attachmentCount == resource.data.attachmentCount + 1
+            || request.resource.data.attachmentCount == resource.data.attachmentCount - 1);
+
       allow delete: if isSignedIn()
         && isCenterAdminMember(resource.data.centerId);
+
+
+      // ── clinical_requests/{requestId}/attachments/{attachmentId} ──────────
+      //
+      // Clinical file attachments: PDF, images, DICOM.
+      //
+      // READ:   any center member — center scope enforced via centerId field.
+      //
+      // CREATE: any center member — with field constraints:
+      //           requestId must match the parent doc ID (no cross-doc write)
+      //           patientVisible must be false on creation (never auto-release)
+      //           isDeleted must be false on creation
+      //           uploadedByUid must be the caller's uid
+      //
+      // UPDATE path 1 — Doctor release (Phase 2B):
+      //           Only a doctor may flip patientVisible and write release audit fields.
+      //           canReleaseClinicalResults() enforces doctor-only authority.
+      //
+      // UPDATE path 2 — Soft-delete:
+      //           Only isDeleted may be written; must be set to true (no undelete).
+      //           Either a center_admin OR the original uploader (if not yet released)
+      //           may soft-delete.  A released attachment (patientVisible=true) is
+      //           protected from deletion by non-admins.
+      //
+      // DELETE: never — physical deletion is reserved for a future Cloud Function
+      //         purge job that runs after the soft-delete retention window expires.
+      //
+      match /attachments/{attachmentId} {
+        // Center members OR the request's doctor may read attachments.
+        // Mirrors the two read paths on the parent clinical_requests collection.
+        allow read: if isSignedIn()
+          && (isCenterMember(resource.data.centerId)
+              || get(/databases/$(database)/documents/clinical_requests/$(requestId)).data.doctorId == request.auth.uid);
+
+        allow create: if isSignedIn()
+          && isCenterMember(request.resource.data.centerId)
+          && request.resource.data.requestId == requestId
+          && request.resource.data.patientVisible == false
+          && request.resource.data.isDeleted == false
+          && request.resource.data.uploadedByUid == request.auth.uid;
+
+        // Doctor releases the attachment to the patient (Phase 2B).
+        allow update: if isSignedIn()
+          && isCenterMember(resource.data.centerId)
+          && canReleaseClinicalResults(resource.data.centerId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['patientVisible', 'releasedAt', 'releasedByUid', 'releasedByName']);
+
+        // Soft-delete: only isDeleted may change; must go true (not undelete).
+        allow update: if isSignedIn()
+          && isCenterMember(resource.data.centerId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['isDeleted'])
+          && request.resource.data.isDeleted == true
+          && (isCenterAdminMember(resource.data.centerId)
+              || (resource.data.uploadedByUid == request.auth.uid
+                  && resource.data.patientVisible == false));
+
+        allow delete: if false;
+      }
     }
 
     // ───────────────────────────────────────────────────────────────────────
