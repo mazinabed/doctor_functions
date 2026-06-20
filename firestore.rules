@@ -1233,7 +1233,14 @@ service cloud.firestore {
       //
       // Clinical file attachments: PDF, images, DICOM.
       //
-      // READ:   any center member — center scope enforced via centerId field.
+      // READ path 1 — center member: isCenterMember(resource.data.centerId).
+      //   Requires the query to constrain centerId (staff board queries do this).
+      // READ path 2 — request's doctor: get(parent).doctorId == auth.uid.
+      //   No resource.data dependency — works for cross-center historical reads
+      //   when the doctor is no longer a member of the request's center.
+      //   These are TWO SEPARATE allow read rules — NOT a single || — so
+      //   Firestore evaluates each independently and does not reject the list
+      //   query due to the unconstrained centerId in path 1.
       //
       // CREATE: any center member — with field constraints:
       //           requestId must match the parent doc ID (no cross-doc write)
@@ -1255,11 +1262,20 @@ service cloud.firestore {
       //         purge job that runs after the soft-delete retention window expires.
       //
       match /attachments/{attachmentId} {
-        // Center members OR the request's doctor may read attachments.
-        // Mirrors the two read paths on the parent clinical_requests collection.
+        // READ path 1 — Center members: uses resource.data.centerId.
+        // Requires the caller's query to constrain centerId so Firestore can
+        // evaluate this per-document rule without rejecting the list query.
+        // Staff board queries always include centerId in their where() clauses.
         allow read: if isSignedIn()
-          && (isCenterMember(resource.data.centerId)
-              || get(/databases/$(database)/documents/clinical_requests/$(requestId)).data.doctorId == request.auth.uid);
+          && isCenterMember(resource.data.centerId);
+
+        // READ path 2 — Request's owning doctor: pure get() — zero resource.data
+        // references, so Firestore evaluates it globally for the subcollection
+        // without requiring a centerId/doctorId where() constraint on the query.
+        // Allows cross-center reads when the doctor is no longer a member of the
+        // center where the request was created (e.g. historical appointments).
+        allow read: if isSignedIn()
+          && get(/databases/$(database)/documents/clinical_requests/$(requestId)).data.doctorId == request.auth.uid;
 
         allow create: if isSignedIn()
           && isCenterMember(request.resource.data.centerId)
