@@ -1228,6 +1228,19 @@ service cloud.firestore {
       allow delete: if isSignedIn()
         && isCenterAdminMember(resource.data.centerId);
 
+      // Doctor releases results to patient: own requests only, completed+unreleased,
+      // release fields only — no clinical, scheduling, or operational field may change.
+      allow update: if isSignedIn()
+        && resource.data.doctorId == request.auth.uid
+        && canReleaseClinicalResults(resource.data.centerId)
+        && resource.data.status == 'completed'
+        && resource.data.patientReleaseStatus == 'unreleased'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'patientReleaseStatus', 'releasedAt', 'releasedByUid',
+             'releasedByName', 'releasedByRole', 'doctorNote',
+             'releaseResultNote', 'updatedAt'
+           ]);
+
 
       // ── clinical_requests/{requestId}/attachments/{attachmentId} ──────────
       //
@@ -1284,12 +1297,16 @@ service cloud.firestore {
           && request.resource.data.isDeleted == false
           && request.resource.data.uploadedByUid == request.auth.uid;
 
-        // Doctor releases the attachment to the patient (Phase 2B).
+        // Doctor releases attachment to patient.
+        // Uses get(parent).doctorId — cross-center safe: works even when the doctor
+        // is no longer a member of the center where the request was created.
+        // Only patientVisible changes on attachment docs; audit fields go on parent.
         allow update: if isSignedIn()
-          && isCenterMember(resource.data.centerId)
           && canReleaseClinicalResults(resource.data.centerId)
+          && get(/databases/$(database)/documents/clinical_requests/$(requestId)).data.doctorId
+               == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['patientVisible', 'releasedAt', 'releasedByUid', 'releasedByName']);
+               .hasOnly(['patientVisible']);
 
         // Soft-delete: only isDeleted may change; must go true (not undelete).
         allow update: if isSignedIn()
