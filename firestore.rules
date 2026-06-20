@@ -1177,7 +1177,7 @@ service cloud.firestore {
     // Staff (nurse/technician/receptionist) read and update requests
     // scoped to their center only.
     // Center admins have full read/write over their center.
-    // No patient-side access.
+    // Patient read: own released results only.
     // ───────────────────────────────────────────────────────────────────────
 
     match /clinical_requests/{requestId} {
@@ -1197,6 +1197,12 @@ service cloud.firestore {
       // Doctors may read requests they created (by doctorId)
       allow read: if isSignedIn()
         && resource.data.doctorId == request.auth.uid;
+
+      // Patient reads own released results only.
+      // Query MUST constrain patientReleaseStatus == 'released'.
+      allow read: if isSignedIn()
+        && resource.data.patientId == request.auth.uid
+        && resource.data.patientReleaseStatus == 'released';
 
       // Staff update: allowed fields are status, resultNote, resultItems,
       // completedByUid, completedByName, completedAt, claimedAt,
@@ -1289,6 +1295,15 @@ service cloud.firestore {
         // center where the request was created (e.g. historical appointments).
         allow read: if isSignedIn()
           && get(/databases/$(database)/documents/clinical_requests/$(requestId)).data.doctorId == request.auth.uid;
+
+        // READ path 3 — Patient reads own released visible attachments.
+        // Verifies patientId ownership via parent document (get() call).
+        // Only attachments explicitly marked patientVisible=true and not soft-deleted.
+        allow read: if isSignedIn()
+          && get(/databases/$(database)/documents/clinical_requests/$(requestId))
+               .data.patientId == request.auth.uid
+          && resource.data.patientVisible == true
+          && resource.data.isDeleted == false;
 
         allow create: if isSignedIn()
           && isCenterMember(request.resource.data.centerId)
