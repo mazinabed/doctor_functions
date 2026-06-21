@@ -172,9 +172,25 @@ service cloud.firestore {
         && request.resource.data.canCall == false;
     }
 
+    // A lab/imaging provider writes diagnostic_providers/{uid} and simultaneously
+    // marks their stale doctors/{uid} draft as converted. This is the only path
+    // where status may move from onboarding → converted_to_diagnostic_provider
+    // from the client. Privilege-escalation fields must not be touched.
+    function isConvertedToProviderTransition() {
+      return resource.data.get('status', '') == 'onboarding'
+        && request.resource.data.status == 'converted_to_diagnostic_provider'
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+             'isActive', 'isVerified', 'verificationStatus',
+             'canBook', 'canCall',
+             'isPaidUser', 'subscriptionStatus', 'subscriptionPlan',
+             'nextBillingDate', 'trialStart', 'trialEnds'
+           ]);
+    }
+
     function touchesDoctorAdminFields() {
       return !isLegalConsentTransition()
         && !isOnboardingSubmitTransition()
+        && !isConvertedToProviderTransition()
         && request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'isPaidUser', 'subscriptionStatus', 'subscriptionPlan',
           'nextBillingDate', 'trialStart', 'trialEnds',
@@ -1096,21 +1112,33 @@ service cloud.firestore {
     // national_ids/{nationalId}
     //
     // Doc ID = normalized national ID number (digits only, Arabic/Persian
-    // numerals converted to ASCII). Used solely to prevent duplicate doctor
+    // numerals converted to ASCII). Used solely to prevent duplicate
     // registrations via an atomic read-then-write transaction.
     //
-    // Read:   authenticated doctor — uniqueness check during onboarding submit
-    // Create: the submitting doctor; doctorId field must equal caller's uid
-    // Update/Delete: admin only — locks are permanent after creation
+    // get:    any authenticated user — safe because:
+    //           (a) the doc ID is the national ID number itself; you must
+    //               already know the number to query it, so a random user
+    //               cannot enumerate or discover other people's IDs.
+    //           (b) the doc data is minimal: doctorId, status, createdAt —
+    //               no PII beyond the ID the caller already supplied.
+    //           Previously restricted to isDoctor() but this blocked
+    //           diagnostic_provider users whose users/{uid}.role is not
+    //           'doctor' — even though their doctors/{uid} draft exists.
+    //           isSignedIn() is the correct gate for a uniqueness check.
+    // list:   admin only — prevents enumeration of the full national_ids set.
+    // Create: authenticated user; doctorId field must equal caller's uid.
+    //         Both doctor and diagnostic_provider onboarding flows use this.
+    // Update/Delete: admin only — locks are permanent after creation.
     //
     // Privacy note: doc ID is the raw national ID number. A future hardening
     // pass should replace it with SHA-256(nationalId + projectSalt).
     // ───────────────────────────────────────────────────────────────────────
 
     match /national_ids/{nationalId} {
-      allow read: if isDoctor();
+      allow get:  if isSignedIn();
+      allow list: if isAdmin();
 
-      allow create: if isDoctor()
+      allow create: if isSignedIn()
         && request.resource.data.doctorId == request.auth.uid;
 
       allow update, delete: if isAdmin();
@@ -1336,6 +1364,46 @@ service cloud.firestore {
         allow delete: if false;
       }
     }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // diagnostic_providers/{uid}
+    //
+    // Lab/imaging providers registered through the doctor portal onboarding flow.
+    // Provider kind: 'laboratory' | 'imaging' (stored in providerKind + serviceGroup).
+    //
+    // Read:   own doc, admin only.
+    //         Public discovery (if needed) uses a future public_providers projection.
+    // Create: provider self-registration during onboarding submit (uid must match).
+    //         Same transaction writes users/{uid}.role = 'diagnostic_provider'.
+    // Update: provider may update own profile fields;
+    //         admin-controlled fields (status, isVerified, isActive, trial fields)
+    //         are protected and require admin or Cloud Functions to change.
+    // Delete: admin only.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /diagnostic_providers/{uid} {
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid || isAdmin());
+
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.isActive == false
+        && request.resource.data.isVerified == false;
+
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && request.auth.uid == uid
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                 'status', 'isVerified', 'isActive',
+                 'subscriptionStatus', 'trialStart', 'trialEnds',
+                 'verificationStatus', 'submittedAt'
+               ]));
+
+      allow delete: if isAdmin();
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // Clinical Doctor Preferences

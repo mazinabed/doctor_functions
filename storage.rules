@@ -27,6 +27,28 @@ service firebase.storage {
       allow write: if request.auth != null;
     }
 
+    // ── Onboarding identity documents ────────────────────────────────────
+    // Path: doctor_docs/{uid}/{fileName}
+    //
+    // Used by ALL onboarding flows: clinical doctors AND diagnostic providers.
+    // The StepDocuments widget uploads to this path for license.jpg,
+    // id_front.jpg, and id_back.jpg regardless of provider type.
+    //
+    // Read:   own uid only — these are sensitive identity documents.
+    //         Admin review happens via the download URL stored in Firestore.
+    // Create: own uid only; ≤ 5 MB; JPEG, PNG, or PDF only.
+    // Delete: own uid only (allows re-upload corrections during onboarding).
+    // Update: never — files are replaced by re-upload, not mutated in place.
+    match /doctor_docs/{uid}/{fileName} {
+      allow read:   if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/jpeg|image/png|application/pdf');
+      allow delete: if request.auth != null && request.auth.uid == uid;
+      allow update: if false;
+    }
+
     // ── Clinical attachments ──────────────────────────────────────────────
     // Path: clinical_attachments/{centerId}/{requestId}/{attachmentId}
     //
