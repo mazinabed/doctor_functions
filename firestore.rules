@@ -44,6 +44,14 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/doctors/$(request.auth.uid));
     }
 
+    // Diagnostic provider: a diagnostic_providers/{uid} document exists for the caller.
+    // Used to grant the same center-creation rights as isDoctor() without
+    // touching doctors/{uid}, which diagnostic providers do not have.
+    function isDiagnosticProvider() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/diagnostic_providers/$(request.auth.uid));
+    }
+
     // Center staff: caller has a member doc in the given center.
     function isCenterMember(centerId) {
       return isSignedIn()
@@ -204,6 +212,33 @@ service cloud.firestore {
     // When multi-doctor or center-admin release is approved, expand this function.
     function canReleaseClinicalResults(centerId) {
       return isDoctor();
+    }
+
+    // ── Lab helper functions ─────────────────────────────────────────────────
+    // Scoped to diagnostic_providers/{labId}/lab_members — separate subcollection
+    // from center 'members', so no collectionGroup collision is possible.
+
+    // Lab member: caller has an active lab_members doc in the given lab.
+    function isLabMember(labId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid));
+    }
+
+    // Lab owner: the diagnostic_providers doc's userId matches the caller.
+    function isLabOwner(labId) {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/diagnostic_providers/$(labId)).data.userId == request.auth.uid;
+    }
+
+    // Lab admin via lab_members subcollection — source of truth for admin access.
+    // Mirrors isCenterAdminMember: cannot be spoofed by editing users/{uid} fields.
+    function isLabAdminMember(labId) {
+      return isSignedIn()
+        && labId is string
+        && labId.size() > 0
+        && exists(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid)).data.get('role', '') == 'lab_admin'
+        && get(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid)).data.get('isActive', false) == true;
     }
 
     // Detects whether a write touches the accountLifecycle sub-object.
@@ -775,9 +810,9 @@ service cloud.firestore {
         || (isSignedIn() && resource.data.ownerId == request.auth.uid)
         || (isSignedIn() && isCenterMember(centerId));
 
-      // Billing fields permitted on creation (doctor sets up initial trial).
+      // Billing fields permitted on creation (doctor or diagnostic provider sets up initial trial).
       // These same fields are blocked from updates by the owner below.
-      allow create: if isDoctor()
+      allow create: if (isDoctor() || isDiagnosticProvider())
         && request.resource.data.ownerId == request.auth.uid;
 
       // accountLifecycle is controlled exclusively by Cloud Functions (admin SDK).
@@ -828,7 +863,8 @@ service cloud.firestore {
         // ── CREATE path 1: Founder self-membership ─────────────────────
         // Allowed only while the parent center doc does not yet exist.
         // !exists() guard permanently closes this path on committed centers.
-        allow create: if isDoctor()
+        // Both doctors and diagnostic providers may create their own center.
+        allow create: if (isDoctor() || isDiagnosticProvider())
           && request.resource.data.uid == request.auth.uid
           && request.resource.data.role == 'center_admin'
           && request.resource.data.isActive == true
@@ -1109,6 +1145,36 @@ service cloud.firestore {
 
 
     // ───────────────────────────────────────────────────────────────────────
+    // center_partnership_requests/{requestId}
+    //
+    // Diagnostic provider → medical center partnership requests.
+    // Intentionally separate from center_join_requests so that the
+    // center-membership side-effect on approval can never fire for a lab.
+    //
+    // Read:   the requesting provider, the center owner/admin, or admin
+    // Create: diagnostic provider only; providerId must match caller; status must be 'pending'
+    // Update: center owner/admin or admin (to approve / reject)
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /center_partnership_requests/{requestId} {
+      allow read: if isSignedIn()
+        && (resource.data.providerId == request.auth.uid
+            || isCenterOwner(resource.data.centerId)
+            || isCenterAdminForCenter(resource.data.centerId)
+            || isAdmin());
+
+      allow create: if isSignedIn()
+        && exists(/databases/$(database)/documents/diagnostic_providers/$(request.auth.uid))
+        && request.resource.data.providerId == request.auth.uid
+        && request.resource.data.status == 'pending';
+
+      allow update: if isCenterOwner(resource.data.centerId)
+        || isCenterAdminForCenter(resource.data.centerId)
+        || isAdmin();
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
     // national_ids/{nationalId}
     //
     // Doc ID = normalized national ID number (digits only, Arabic/Persian
@@ -1197,6 +1263,20 @@ service cloud.firestore {
         && resource.data.uid == request.auth.uid;
     }
 
+    // Collection group: lab_members
+    //
+    // Authorizes collectionGroup('lab_members').where('uid', isEqualTo: uid)
+    // queries fired on startup by labScopeProvider to resolve lab staff identity.
+    // Separate from 'members' — no overlap with center staff collectionGroup queries.
+    // A user may only read lab_members documents where uid == their own auth uid.
+    // Write access is governed by the nested rule inside diagnostic_providers only.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /{path=**}/lab_members/{memberId} {
+      allow read: if isSignedIn()
+        && resource.data.uid == request.auth.uid;
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // Clinical Requests
@@ -1268,7 +1348,7 @@ service cloud.firestore {
         && resource.data.doctorId == request.auth.uid
         && canReleaseClinicalResults(resource.data.centerId)
         && resource.data.status == 'completed'
-        && resource.data.patientReleaseStatus == 'unreleased'
+        && resource.data.get('patientReleaseStatus', 'unreleased') == 'unreleased'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'patientReleaseStatus', 'releasedAt', 'releasedByUid',
              'releasedByName', 'releasedByRole', 'doctorNote',
@@ -1402,6 +1482,72 @@ service cloud.firestore {
                ]));
 
       allow delete: if isAdmin();
+
+      // ── diagnostic_providers/{labId}/lab_members/{memberId} ───────────────
+      //
+      // Lab staff membership subcollection.
+      // Uses 'lab_members' (NOT 'members') to avoid collisionWith the center
+      // collectionGroup('members') queries used by centerScopeProvider.
+      //
+      // Authority model mirrors medical_centers/.../members:
+      //   All write authority derives from isLabAdminMember(labId) or isLabOwner.
+      //   Self-protection: admins cannot modify their own lab_members doc.
+      //   Target protection: lab_admin records cannot be updated by client writes.
+      //   Promotion block: role cannot be changed to 'lab_admin' from the client.
+      //   Field restriction: updates limited to operational fields only.
+      //
+      match /lab_members/{memberId} {
+        // READ: lab members, owner, admin, or own record.
+        // resource.data.uid == request.auth.uid covers the collectionGroup
+        // startup query (first-login before isLabMember resolves).
+        // NOTE: wildcard from parent match /diagnostic_providers/{uid} is 'uid',
+        //       not 'labId' — all helper calls must use 'uid' here.
+        allow read: if isSignedIn()
+          && (isLabMember(uid)
+              || isLabOwner(uid)
+              || isAdmin()
+              || resource.data.uid == request.auth.uid);
+
+        // CREATE path 1: Lab admin founder self-membership.
+        // Only allowed when the parent diagnostic_providers doc already exists
+        // (lab owner completed onboarding).
+        allow create: if isSignedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.role == 'lab_admin'
+          && request.resource.data.isActive == true
+          && exists(/databases/$(database)/documents/diagnostic_providers/$(uid));
+
+        // CREATE path 2: Lab admin or owner invites staff.
+        // Cannot create a lab_admin member via this path.
+        allow create: if (isLabOwner(uid) || isLabAdminMember(uid))
+          && request.resource.data.get('role', '') != 'lab_admin';
+
+        // UPDATE path 1: Scoped lab admin.
+        // Self-protection: cannot update own record.
+        // Target protection: cannot update lab_admin records.
+        // Promotion block: cannot promote to lab_admin.
+        // Field restriction: only operational fields.
+        allow update: if isLabAdminMember(uid)
+          && resource.data.get('uid', '') != request.auth.uid
+          && resource.data.get('role', '') != 'lab_admin'
+          && request.resource.data.get('role', '') != 'lab_admin'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'role', 'permissions', 'isActive', 'displayName',
+               'updatedAt', 'updatedBy',
+               'reactivatedBy', 'reactivatedAt', 'deactivatedBy', 'deactivatedAt'
+             ]);
+
+        // UPDATE path 2: Lab owner or global admin — unrestricted.
+        allow update: if isLabOwner(uid) || isAdmin();
+
+        // DELETE: cancel invitations or remove staff.
+        // Self-protection and target-protection apply.
+        allow delete: if isLabOwner(uid)
+          || isAdmin()
+          || (isLabAdminMember(uid)
+              && resource.data.get('uid', '') != request.auth.uid
+              && resource.data.get('role', '') != 'lab_admin');
+      }
     }
 
 
