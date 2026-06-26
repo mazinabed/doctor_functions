@@ -230,6 +230,16 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/diagnostic_providers/$(labId)).data.userId == request.auth.uid;
     }
 
+    // Returns the partnerProviderId of a clinical_request document (empty string
+    // if the field is absent).  Used in attachment READ path 4 to avoid referencing
+    // resource.data.centerId — a resource.data reference without a corresponding
+    // where() constraint in the query would cause Firestore to reject the whole list
+    // query even when another allow rule (e.g. READ path 2) would grant access.
+    function labProviderForRequest(reqId) {
+      return get(/databases/$(database)/documents/clinical_requests/$(reqId))
+               .data.get('partnerProviderId', '');
+    }
+
     // Lab admin via lab_members subcollection — source of truth for admin access.
     // Mirrors isCenterAdminMember: cannot be spoofed by editing users/{uid} fields.
     function isLabAdminMember(labId) {
@@ -448,8 +458,14 @@ service cloud.firestore {
     match /schedules/{scheduleId} {
       // Published active schedules are publicly readable — guest availability browsing.
       // Unpublished and inactive schedules remain private.
+      // For diagnostic providers: doctorId = labId (piggyback model — reuses schedule system).
+      // Lab staff read their published schedule via isLabMember; lab owner covered by doctorId check.
       allow read: if (resource.data.status == 'published' && resource.data.isActive == true)
-        || (isSignedIn() && (resource.data.doctorId == request.auth.uid || isAdmin()));
+        || (isSignedIn() && (resource.data.doctorId == request.auth.uid || isAdmin()))
+        // Lab/imaging reception reads the lab's published schedule (doctorId = labId piggyback).
+        || (isSignedIn()
+            && resource.data.get('status', '') == 'published'
+            && isLabMember(resource.data.centerId));
 
       allow create: if isDoctor()
         && request.resource.data.doctorId == request.auth.uid
@@ -1244,6 +1260,16 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ── Public diagnostic provider profiles ───────────────────────────────────
+    // Safe patient-facing projection of diagnostic_providers/{uid}.
+    // Written exclusively by the syncPublicDiagnosticProvider Cloud Function
+    // (or admin backfill). Only eligible providers (active + verified) appear here.
+    // Read access is intentionally public — same pattern as public_doctors.
+    match /public_diagnostic_providers/{providerId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /facebook_doctors/{id} {
       allow read: if isAdmin();
     }
@@ -1294,10 +1320,40 @@ service cloud.firestore {
         return isCenterMember(resource.data.centerId);
       }
 
-      // Doctors may create a request for their own appointment at their center
-      allow create: if isSignedIn()
-        && request.resource.data.doctorId == request.auth.uid
-        && isCenterMember(request.resource.data.centerId);
+      // Doctors may create a request for their own appointment at their center.
+      // Lab walk-in path: lab reception creates orders for physically-present patients.
+      // Walk-in orders set source='walkin', requestDestination='partner',
+      // partnerStatus='checkedIn', and centerId=labId (the lab refers to itself).
+      // Lab scheduled path: lab reception pre-books a future appointment.
+      // Scheduled orders set source='scheduled', partnerStatus='scheduled', slotId required.
+      allow create: if isSignedIn() && (
+        (request.resource.data.doctorId == request.auth.uid
+          && isCenterMember(request.resource.data.centerId))
+        ||
+        (request.resource.data.get('source', '') == 'walkin'
+          && request.resource.data.get('requestDestination', '') == 'partner'
+          && request.resource.data.get('partnerStatus', '') == 'checkedIn'
+          && (isLabMember(request.resource.data.get('partnerProviderId', ''))
+              || request.auth.uid == request.resource.data.get('partnerProviderId', '')))
+        ||
+        (request.resource.data.get('source', '') == 'scheduled'
+          && request.resource.data.get('requestDestination', '') == 'partner'
+          && request.resource.data.get('partnerStatus', '') == 'scheduled'
+          && request.resource.data.get('slotId', '') != ''
+          && (isLabMember(request.resource.data.get('partnerProviderId', ''))
+              || request.auth.uid == request.resource.data.get('partnerProviderId', '')))
+        ||
+        // Patient self-books a scheduled lab/imaging appointment.
+        // Starts as pendingApproval — lab reception must approve before it becomes scheduled.
+        // patientId must equal auth.uid — patient can only book for themselves (or family,
+        // but the account holder's uid is always the identity anchor).
+        (request.resource.data.get('source', '') == 'scheduled'
+          && request.resource.data.get('requestDestination', '') == 'partner'
+          && request.resource.data.get('partnerStatus', '') == 'pendingApproval'
+          && request.resource.data.get('slotId', '') != ''
+          && request.resource.data.get('createdByRole', '') == 'patient'
+          && request.resource.data.get('patientId', '') == request.auth.uid)
+      );
 
       // Staff and admins may read any request in their center
       allow read: if isSignedIn() && isRequestCenterMember();
@@ -1313,14 +1369,14 @@ service cloud.firestore {
         && resource.data.patientReleaseStatus == 'released';
 
       // Staff update: allowed fields are status, resultNote, resultItems,
-      // completedByUid, completedByName, completedAt, claimedAt,
-      // cancelledAt, updatedAt
+      // completedByUid, completedByName, completedAt, completedDateKey,
+      // claimedAt, cancelledAt, updatedAt
       allow update: if isSignedIn()
         && isRequestCenterMember()
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['status', 'resultNote', 'resultItems',
                        'completedByUid', 'completedByName',
-                       'completedAt', 'updatedAt',
+                       'completedAt', 'completedDateKey', 'updatedAt',
                        'claimedAt', 'cancelledAt']);
 
       // Center admins may cancel (full update) or delete requests
@@ -1334,6 +1390,17 @@ service cloud.firestore {
       // arithmetic constraint prevents arbitrary counter manipulation.
       allow update: if isSignedIn()
         && isRequestCenterMember()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['attachmentCount', 'updatedAt'])
+        && (request.resource.data.attachmentCount == resource.data.attachmentCount + 1
+            || request.resource.data.attachmentCount == resource.data.attachmentCount - 1);
+
+      // Lab member attachment counter ±1 (mirrors center-member rule above).
+      // partnerProviderId on walk-in orders is the labId — no get() needed.
+      // Owner case: lab owner's UID == labId (diagnostic_provider doc ID) — no lab_members doc exists for owner.
+      allow update: if isSignedIn()
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['attachmentCount', 'updatedAt'])
         && (request.resource.data.attachmentCount == resource.data.attachmentCount + 1
@@ -1355,6 +1422,165 @@ service cloud.firestore {
              'releaseResultNote', 'updatedAt'
            ]);
 
+      // Lab releases walk-in / scheduled results directly to patient.
+      // Only applies when doctorId is empty (no referring doctor on the order).
+      // Doctor-referred partner requests must go through the doctor release path above.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('source', '') in ['walkin', 'scheduled']
+        && resource.data.get('doctorId', '') == ''
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
+        && resource.data.status == 'completed'
+        && resource.data.get('patientReleaseStatus', 'unreleased') == 'unreleased'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'patientReleaseStatus', 'releasedAt', 'releasedByUid',
+             'releasedByName', 'releasedByRole', 'releaseResultNote', 'updatedAt'
+           ]);
+
+      // Diagnostic provider reads partner requests addressed to them.
+      // partnerProviderId == auth.uid gates the query so only the intended
+      // recipient can read their own incoming requests.
+      allow read: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid;
+
+      // Lab members (non-owner staff) can read partner requests for their lab.
+      // isLabMember() performs a cross-document get() — the query must be scoped
+      // by partnerProviderId to bound the evaluated document set.
+      allow read: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && isLabMember(resource.data.get('partnerProviderId', ''));
+
+      // Diagnostic provider acknowledges receipt (sent → received).
+      // Only the four audit fields may change; no clinical or status fields.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('partnerStatus', '') == 'sent'
+        && request.resource.data.get('partnerStatus', '') == 'received'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerReceivedAt', 'partnerReceivedByUid', 'updatedAt'
+           ]);
+
+      // Diagnostic provider checks in patient (received → checkedIn).
+      // Payment fields are optional — reception may capture payment at the same
+      // time as check-in or skip it. hasOnly is a ceiling, not a floor.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('partnerStatus', '') == 'received'
+        && request.resource.data.get('partnerStatus', '') == 'checkedIn'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerCheckedInAt', 'partnerCheckedInByUid',
+             'partnerCheckedInByName',
+             'paymentStatus', 'paymentStatusUpdatedAt', 'paymentStatusUpdatedByUid',
+             'paymentStatusUpdatedByName', 'amountPaid', 'paymentMethod', 'receiptRef',
+             'updatedAt'
+           ]);
+
+      // Scheduled appointment: patient arrives and is checked in (scheduled → checkedIn).
+      // Same field ceiling as the received → checkedIn rule; starting state differs.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('partnerStatus', '') == 'scheduled'
+        && request.resource.data.get('partnerStatus', '') == 'checkedIn'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerCheckedInAt', 'partnerCheckedInByUid',
+             'partnerCheckedInByName',
+             'paymentStatus', 'paymentStatusUpdatedAt', 'paymentStatusUpdatedByUid',
+             'paymentStatusUpdatedByName', 'amountPaid', 'paymentMethod', 'receiptRef',
+             'updatedAt'
+           ]);
+
+      // Scheduled appointment: patient did not arrive (scheduled → noShow).
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('partnerStatus', '') == 'scheduled'
+        && request.resource.data.get('partnerStatus', '') == 'noShow'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerNoShowAt', 'partnerNoShowByUid',
+             'partnerNoShowByName', 'updatedAt'
+           ]);
+
+      // Scheduled appointment: reception cancels (scheduled → cancelled).
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('partnerStatus', '') == 'scheduled'
+        && request.resource.data.get('partnerStatus', '') == 'cancelled'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerCancelledAt', 'partnerCancelledByUid',
+             'partnerCancelledByName', 'partnerCancelReason', 'partnerCancelNotes',
+             'updatedAt'
+           ]);
+
+      // Pending approval → scheduled: lab owner approves a future appointment.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('partnerStatus', '') == 'pendingApproval'
+        && request.resource.data.get('partnerStatus', '') == 'scheduled'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerApprovedAt', 'partnerApprovedByUid',
+             'partnerApprovedByName', 'updatedAt'
+           ]);
+
+      // Pending approval → cancelled: lab owner rejects a future appointment.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('partnerStatus', '') == 'pendingApproval'
+        && request.resource.data.get('partnerStatus', '') == 'cancelled'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerCancelledAt', 'partnerCancelledByUid',
+             'partnerCancelledByName', 'partnerCancelReason', 'partnerCancelNotes',
+             'updatedAt'
+           ]);
+
+      // Lab technician starts processing a checked-in partner request (pending → in_progress).
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
+        && resource.data.get('partnerStatus', '') == 'checkedIn'
+        && resource.data.get('status', '') == 'pending'
+        && request.resource.data.get('status', '') == 'in_progress'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'status', 'claimedAt', 'updatedAt'
+           ]);
+
+      // Lab technician completes processing and records results (in_progress → completed).
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
+        && resource.data.get('partnerStatus', '') == 'checkedIn'
+        && resource.data.get('status', '') == 'in_progress'
+        && request.resource.data.get('status', '') == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'status', 'resultNote', 'resultItems',
+             'completedAt', 'completedDateKey',
+             'completedByUid', 'completedByName', 'updatedAt'
+           ]);
+
+      // Diagnostic provider captures payment on an existing partner request
+      // (unpaid → paid). Covers: late payment after check-in, correction.
+      // partnerStatus must not change — only financial fields.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && resource.data.get('partnerProviderId', '') == request.auth.uid
+        && resource.data.get('paymentStatus', 'unpaid') == 'unpaid'
+        && request.resource.data.get('paymentStatus', '') == 'paid'
+        && request.resource.data.get('paymentStatusUpdatedByUid', '') == request.auth.uid
+        && request.resource.data.get('amountPaid', 0) > 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'paymentStatus', 'paymentStatusUpdatedAt', 'paymentStatusUpdatedByUid',
+             'paymentStatusUpdatedByName', 'amountPaid', 'paymentMethod', 'receiptRef',
+             'updatedAt'
+           ]);
 
       // ── clinical_requests/{requestId}/attachments/{attachmentId} ──────────
       //
@@ -1413,8 +1639,32 @@ service cloud.firestore {
           && resource.data.patientVisible == true
           && resource.data.isDeleted == false;
 
+        // READ path 4 — Lab member reads attachments on their lab's orders.
+        // Uses labProviderForRequest() instead of resource.data.centerId so this rule
+        // has zero resource.data dependencies.  Without this, Firestore rejects the
+        // doctor's unconstrained list query (streamAttachments) even though READ path 2
+        // independently grants access — Firestore may refuse any query where ANY allow
+        // rule references resource.data without a matching where() constraint.
+        // Owner case: lab owner's UID == partnerProviderId — no lab_members doc exists.
+        allow read: if isSignedIn()
+          && labProviderForRequest(requestId) != ''
+          && (isLabMember(labProviderForRequest(requestId))
+              || request.auth.uid == labProviderForRequest(requestId));
+
         allow create: if isSignedIn()
           && isCenterMember(request.resource.data.centerId)
+          && request.resource.data.requestId == requestId
+          && request.resource.data.patientVisible == false
+          && request.resource.data.isDeleted == false
+          && request.resource.data.uploadedByUid == request.auth.uid;
+
+        // CREATE path 2 — Lab reception uploads paper referral for a walk-in order.
+        // centerId on lab walk-in attachments is the labId so isLabMember() resolves
+        // directly without a get() call.
+        // Owner case: lab owner's UID == labId — no lab_members doc exists for owner.
+        allow create: if isSignedIn()
+          && (isLabMember(request.resource.data.centerId)
+              || request.auth.uid == request.resource.data.centerId)
           && request.resource.data.requestId == requestId
           && request.resource.data.patientVisible == false
           && request.resource.data.isDeleted == false
@@ -1428,6 +1678,20 @@ service cloud.firestore {
           && canReleaseClinicalResults(resource.data.centerId)
           && get(/databases/$(database)/documents/clinical_requests/$(requestId)).data.doctorId
                == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['patientVisible']);
+
+        // Lab releases walk-in / scheduled attachment to patient (no referring doctor).
+        // labProviderForRequest() reads the parent request's partnerProviderId; the
+        // subsequent get() calls to the same document path are cached by the rules engine.
+        allow update: if isSignedIn()
+          && labProviderForRequest(requestId) != ''
+          && (isLabMember(labProviderForRequest(requestId))
+              || request.auth.uid == labProviderForRequest(requestId))
+          && get(/databases/$(database)/documents/clinical_requests/$(requestId)).data
+               .get('source', '') in ['walkin', 'scheduled']
+          && get(/databases/$(database)/documents/clinical_requests/$(requestId)).data
+               .get('doctorId', '') == ''
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['patientVisible']);
 

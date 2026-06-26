@@ -346,6 +346,108 @@
         { "fieldPath": "sortOrder",  "order": "ASCENDING" },
         { "fieldPath": "createdAt",  "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partnerProviderId",  "order": "ASCENDING" },
+        { "fieldPath": "requestDestination", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",          "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partnerProviderId",  "order": "ASCENDING" },
+        { "fieldPath": "requestDestination", "order": "ASCENDING" },
+        { "fieldPath": "source",             "order": "ASCENDING" },
+        { "fieldPath": "dateKey",            "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partnerProviderId",  "order": "ASCENDING" },
+        { "fieldPath": "requestDestination", "order": "ASCENDING" },
+        { "fieldPath": "source",             "order": "ASCENDING" },
+        { "fieldPath": "dateKey",            "order": "ASCENDING" },
+        { "fieldPath": "slotStartAt",        "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partnerProviderId",  "order": "ASCENDING" },
+        { "fieldPath": "requestDestination", "order": "ASCENDING" },
+        { "fieldPath": "source",             "order": "ASCENDING" },
+        { "fieldPath": "partnerStatus",      "order": "ASCENDING" },
+        { "fieldPath": "dateKey",            "order": "ASCENDING" },
+        { "fieldPath": "slotStartAt",        "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partnerProviderId",    "order": "ASCENDING" },
+        { "fieldPath": "requestDestination",   "order": "ASCENDING" },
+        { "fieldPath": "status",               "order": "ASCENDING" },
+        { "fieldPath": "patientReleaseStatus", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",            "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partnerProviderId",  "order": "ASCENDING" },
+        { "fieldPath": "requestDestination", "order": "ASCENDING" },
+        { "fieldPath": "dateKey",            "order": "ASCENDING" },
+        { "fieldPath": "createdAt",          "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "partnerProviderId",  "order": "ASCENDING" },
+        { "fieldPath": "requestDestination", "order": "ASCENDING" },
+        { "fieldPath": "completedDateKey",   "order": "ASCENDING" },
+        { "fieldPath": "completedAt",        "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "public_diagnostic_providers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",       "order": "ASCENDING" },
+        { "fieldPath": "province_key", "order": "ASCENDING" },
+        { "fieldPath": "city_en",      "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "public_diagnostic_providers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",       "order": "ASCENDING" },
+        { "fieldPath": "province_key", "order": "ASCENDING" },
+        { "fieldPath": "city_en",      "order": "ASCENDING" },
+        { "fieldPath": "providerKind", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "public_diagnostic_providers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",             "order": "ASCENDING" },
+        { "fieldPath": "province_key",       "order": "ASCENDING" },
+        { "fieldPath": "city_en",            "order": "ASCENDING" },
+        { "fieldPath": "facilityName_lower", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

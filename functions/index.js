@@ -1842,6 +1842,7 @@ admin.initializeApp();
 const db = admin.firestore();
 
 const { isPublicEligible, buildPublicDoc } = require("./lib/publicDoctorSanitizer");
+const { isProviderPublicEligible, buildPublicProviderDoc } = require("./lib/publicDiagnosticProviderSanitizer");
 
 exports.attachDoctorOwnership = onDocumentUpdated(
   "doctors/{doctorId}",
@@ -1911,6 +1912,129 @@ exports.syncPublicDoctor = onDocumentWritten(
     const publicDoc = buildPublicDoc(doctorId, data, existing.exists ? existing.data() : null);
     await publicRef.set(publicDoc);
     console.log(`public_doctors: synced ${doctorId}`);
+  }
+);
+
+// ─── Sync safe public diagnostic provider profile ─────────────────────────────
+// Fires on every diagnostic_providers/{providerId} write (create, update, delete).
+// Eligible providers → write safe fields to public_diagnostic_providers/{providerId}.
+// Ineligible or deleted → remove public_diagnostic_providers/{providerId}.
+//
+// centerId resolution:
+//   Lab schedules store centerId = <medical_centers doc ID> and doctorId = providerId.
+//   The diagnostic_providers doc does not store centerId directly (legacy gap).
+//   If data.centerId is absent, this trigger queries the provider's first published
+//   schedule to find the real centerId, then writes it back to the private doc so
+//   all subsequent triggers use data.centerId directly (no repeated query).
+exports.syncPublicDiagnosticProvider = onDocumentWritten(
+  "diagnostic_providers/{providerId}",
+  async (event) => {
+    const providerId = event.params.providerId;
+    const after = event.data.after;
+    const publicRef = db.collection("public_diagnostic_providers").doc(providerId);
+
+    if (!after.exists) {
+      await publicRef.delete();
+      console.log(`public_diagnostic_providers: removed ${providerId} (source doc deleted)`);
+      return;
+    }
+
+    const data = after.data();
+
+    if (!isProviderPublicEligible(data)) {
+      const existing = await publicRef.get();
+      if (existing.exists) {
+        await publicRef.delete();
+        console.log(
+          `public_diagnostic_providers: removed ${providerId} — ineligible ` +
+          `(status=${data.status}, isActive=${data.isActive}, isVerified=${data.isVerified})`
+        );
+      } else {
+        console.log(`public_diagnostic_providers: skipped ${providerId} — ineligible`);
+      }
+      return;
+    }
+
+    // Resolve centerId from schedules when the private doc doesn't have it.
+    // Lab schedules are keyed by doctorId = providerId and carry centerId from
+    // the medical_centers collection — these are different IDs.
+    let resolvedCenterId = (typeof data.centerId === "string" && data.centerId.trim())
+      ? data.centerId.trim()
+      : null;
+
+    if (!resolvedCenterId) {
+      try {
+        const schedSnap = await db.collection("schedules")
+          .where("doctorId", "==", providerId)
+          .where("status", "==", "published")
+          .limit(1)
+          .get();
+        if (!schedSnap.empty) {
+          const schedCenterId = schedSnap.docs[0].data().centerId;
+          if (typeof schedCenterId === "string" && schedCenterId.trim()) {
+            resolvedCenterId = schedCenterId.trim();
+            // Write centerId back to private doc so future triggers skip this query.
+            await db.collection("diagnostic_providers").doc(providerId).update({
+              centerId: resolvedCenterId,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            console.log(`diagnostic_providers: wrote back centerId=${resolvedCenterId} for ${providerId}`);
+          }
+        }
+      } catch (e) {
+        console.warn(`public_diagnostic_providers: centerId schedule lookup failed for ${providerId}:`, e.message);
+      }
+    }
+
+    const existing = await publicRef.get();
+    const publicDoc = buildPublicProviderDoc(
+      providerId,
+      data,
+      existing.exists ? existing.data() : null,
+      resolvedCenterId
+    );
+    await publicRef.set(publicDoc);
+    console.log(`public_diagnostic_providers: synced ${providerId} [${data.serviceGroup}] centerId=${publicDoc.centerId}`);
+  }
+);
+
+// ─── Keep diagnostic_providers.centerId in sync with published schedules ───────
+// Fires on every schedules/{scheduleId} write.
+// When a schedule is published and its doctorId matches a diagnostic_providers doc,
+// writes centerId back to that private doc. This is the persistent fix: once stored,
+// the syncPublicDiagnosticProvider trigger above always has data.centerId available
+// without needing to query schedules.
+exports.syncLabCenterId = onDocumentWritten(
+  "schedules/{scheduleId}",
+  async (event) => {
+    const after = event.data.after;
+    if (!after.exists) return; // schedule deleted — nothing to sync
+
+    const schedule = after.data();
+
+    // Only act on published schedules for potential lab providers.
+    if (schedule.status !== "published") return;
+
+    const doctorId = schedule.doctorId;
+    const centerId = schedule.centerId;
+
+    if (!doctorId || !centerId) return;
+
+    // Check whether doctorId matches a diagnostic_providers doc.
+    const providerSnap = await db.collection("diagnostic_providers").doc(doctorId).get();
+    if (!providerSnap.exists) return; // not a lab provider — normal doctor schedule
+
+    const providerData = providerSnap.data();
+
+    // Skip if centerId is already correctly stored.
+    if (providerData.centerId === centerId) return;
+
+    await db.collection("diagnostic_providers").doc(doctorId).update({
+      centerId: centerId,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    console.log(`diagnostic_providers: centerId synced from schedule — providerId=${doctorId} centerId=${centerId}`);
+    // syncPublicDiagnosticProvider will fire next and push centerId to the public doc.
   }
 );
 

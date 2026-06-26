@@ -32,6 +32,7 @@ exports.lookupPatientByPhone = onCall({ region: "us-central1" }, async (request)
 
   const db = admin.firestore();
 
+  // Authorization path 1: medical center staff member
   const memberSnap = await db
     .collection("medical_centers")
     .doc(centerId)
@@ -39,8 +40,30 @@ exports.lookupPatientByPhone = onCall({ region: "us-central1" }, async (request)
     .doc(uid)
     .get();
 
-  if (!memberSnap.exists || memberSnap.data().isActive !== true) {
-    throw new HttpsError("permission-denied", "Not an active center member.");
+  let isAuthorized = memberSnap.exists && memberSnap.data().isActive === true;
+
+  // Authorization path 2: lab staff member (diagnostic_providers/{centerId}/lab_members/{uid})
+  if (!isAuthorized) {
+    const labMemberSnap = await db
+      .collection("diagnostic_providers")
+      .doc(centerId)
+      .collection("lab_members")
+      .doc(uid)
+      .get();
+    isAuthorized = labMemberSnap.exists && labMemberSnap.data().isActive === true;
+  }
+
+  // Authorization path 3: lab owner (diagnostic_providers/{centerId}.userId == uid)
+  if (!isAuthorized) {
+    const providerSnap = await db
+      .collection("diagnostic_providers")
+      .doc(centerId)
+      .get();
+    isAuthorized = providerSnap.exists && providerSnap.data().userId === uid;
+  }
+
+  if (!isAuthorized) {
+    throw new HttpsError("permission-denied", "Not an active center or lab member.");
   }
 
   const normalized = normalizeIraqi(phoneNumber);
