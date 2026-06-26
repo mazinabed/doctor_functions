@@ -287,6 +287,22 @@ service cloud.firestore {
     }
 
 
+    // Patient releases their own slot lock when cancelling a self-booked
+    // lab/imaging appointment. slot_locks.appointmentId for lab bookings
+    // points to clinical_requests (not appointments). Verifies ownership
+    // via clinical_requests to prevent cross-patient slot manipulation.
+    // partnerStatus guard prevents releasing locks for already-terminal bookings.
+    // Only 1 Firestore read — the let binding caches the document.
+    function isPatientLabSlotCancel() {
+      let apptId = resource.data.get('appointmentId', '');
+      let cr = get(/databases/$(database)/documents/clinical_requests/$(apptId)).data;
+      return apptId.size() > 0
+        && cr.get('patientId', '') == request.auth.uid
+        && cr.get('source', '') == 'scheduled'
+        && cr.get('createdByRole', '') == 'patient'
+        && cr.get('partnerStatus', '') in ['pendingApproval', 'scheduled'];
+    }
+
     // ───────────────────────────────────────────────────────────────────────
     // REFERENCE DATA  (public read — cities, provinces, specialties)
     // ───────────────────────────────────────────────────────────────────────
@@ -670,7 +686,13 @@ service cloud.firestore {
 
       allow delete: if isSignedIn()
         && (resource == null
+            // Booking creator (covers all cancel surfaces — patient, staff, reception)
             || resource.data.lockedBy == request.auth.uid
+            // Patient cancels own self-booked lab/imaging appointment.
+            // Explicit clinical_requests path — appointmentId in slot_locks
+            // for lab bookings points to clinical_requests, not appointments.
+            || isPatientLabSlotCancel()
+            // Doctor appointment cancel: appointmentId points to appointments/{id}
             || (resource.data.appointmentId is string
                 && get(/databases/$(database)/documents/appointments/$(resource.data.appointmentId)).data.patientId == request.auth.uid)
             || isCenterMember(resource.data.centerId)
@@ -1367,6 +1389,28 @@ service cloud.firestore {
       allow read: if isSignedIn()
         && resource.data.patientId == request.auth.uid
         && resource.data.patientReleaseStatus == 'released';
+
+      // Patient reads own self-booked scheduled requests (upcoming appointments).
+      // Strictly bounded: only patient-created bookings with source='scheduled'.
+      // Doctor-referred requests remain invisible until explicitly released.
+      // Query MUST include all three constraints so Firestore can evaluate this
+      // rule without resource.data lookups on unfiltered fields.
+      allow read: if isSignedIn()
+        && resource.data.patientId == request.auth.uid
+        && resource.data.get('createdByRole', '') == 'patient'
+        && resource.data.get('source', '') == 'scheduled';
+
+      // Patient cancels their own pending or approved lab/imaging booking.
+      // Only applies to patient-created scheduled requests in cancellable states.
+      // Slot release (slot_locks deletion) is done in the same client batch.
+      allow update: if isSignedIn()
+        && request.auth.uid == resource.data.patientId
+        && resource.data.get('source', '') == 'scheduled'
+        && resource.data.get('createdByRole', '') == 'patient'
+        && resource.data.get('partnerStatus', '') in ['pendingApproval', 'scheduled']
+        && request.resource.data.get('partnerStatus', '') == 'cancelled'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['partnerStatus', 'status', 'cancelledAt', 'updatedAt']);
 
       // Staff update: allowed fields are status, resultNote, resultItems,
       // completedByUid, completedByName, completedAt, completedDateKey,

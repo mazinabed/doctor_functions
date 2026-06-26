@@ -338,6 +338,16 @@
       ]
     },
     {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "patientId",     "order": "ASCENDING" },
+        { "fieldPath": "source",        "order": "ASCENDING" },
+        { "fieldPath": "createdByRole", "order": "ASCENDING" },
+        { "fieldPath": "slotStartAt",   "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "clinical_custom_types",
       "queryScope": "COLLECTION",
       "fields": [
@@ -447,6 +457,18 @@
         { "fieldPath": "province_key",       "order": "ASCENDING" },
         { "fieldPath": "city_en",            "order": "ASCENDING" },
         { "fieldPath": "facilityName_lower", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "clinical_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "patientId",          "order": "ASCENDING" },
+        { "fieldPath": "patientIdentityKey", "order": "ASCENDING" },
+        { "fieldPath": "source",             "order": "ASCENDING" },
+        { "fieldPath": "createdByRole",      "order": "ASCENDING" },
+        { "fieldPath": "dateKey",            "order": "ASCENDING" },
+        { "fieldPath": "partnerStatus",      "order": "ASCENDING" }
       ]
     }
   ],
