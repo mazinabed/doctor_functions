@@ -4,7 +4,9 @@
  * sendSameDayReminders
  *
  * Fires every hour at minute 0 (0 * * * *).
- * Creates same-day reminders for appointments starting in 1–2 hours.
+ * Creates same-day reminders for appointments starting in 1–2 hours —
+ * for both doctor appointments (appointments collection) and patient-self-booked
+ * lab/imaging appointments (clinical_requests collection).
  *
  * Window logic:
  *   windowStart = now + 1 hour
@@ -13,11 +15,14 @@
  *   falls in exactly one run. The deterministic doc ID provides safety against
  *   edge-case overlap (clock drift, cold-start delay, etc.).
  *
- * Uses appointmentAt (Timestamp) — this is the canonical slot start time
- * written by AppointmentBuilder.create() in the patient app.
+ * Doctor appointments use appointmentAt (Timestamp) as the canonical slot start.
+ * Lab appointments  use slotStartAt   (Timestamp) as the canonical slot start.
  *
- * Recipient: bookedByUserId when it differs from patientId, otherwise patientId.
- * Deterministic doc ID: reminder_{appointmentId}_same_day
+ * Recipient:
+ *   Doctor: bookedByUserId when it differs from patientId, otherwise patientId.
+ *   Lab:    always patientId (self-booked).
+ *
+ * Deterministic doc IDs: reminder_{id}_same_day
  */
 
 const { onSchedule } = require('firebase-functions/v2/scheduler');
@@ -26,8 +31,13 @@ const { getMessaging } = require('firebase-admin/messaging');
 
 const SKIP_STATUSES = new Set(['cancelled', 'completed']);
 
+// Lab appointment partnerStatus values that should not receive reminders.
+const LAB_SKIP_PARTNER_STATUSES = new Set(['cancelled', 'completed', 'noshow', 'rejected']);
+
 // ─── FCM fan-out ──────────────────────────────────────────────────────────────
-async function sendFcmPush(db, recipientUid, notifContent) {
+// dataPayload overrides the default { appointmentId } — pass
+// { clinicalRequestId } for lab appointment reminders.
+async function sendFcmPush(db, recipientUid, notifContent, dataPayload) {
   const tokensSnap = await db
     .collection('users')
     .doc(recipientUid)
@@ -61,7 +71,9 @@ async function sendFcmPush(db, recipientUid, notifContent) {
       const response = await messaging.sendEachForMulticast({
         tokens,
         notification: { title, body },
-        data: { appointmentId: notifContent.appointmentId || '' },
+        data: dataPayload !== undefined
+          ? dataPayload
+          : { appointmentId: notifContent.appointmentId || '' },
         webpush: {
           notification: {
             icon:  '/icons/Icon-192.png',
@@ -110,6 +122,10 @@ exports.sendSameDayReminders = onSchedule(
     const windowStart = new Date(now.getTime() + 60 * 60 * 1000);      // +1 h
     const windowEnd   = new Date(now.getTime() + 2 * 60 * 60 * 1000);  // +2 h
 
+    let created = 0;
+    let skipped = 0;
+
+    // ── Doctor appointments ────────────────────────────────────────────────────
     const snap = await db
       .collection('appointments')
       .where('appointmentAt', '>=', Timestamp.fromDate(windowStart))
@@ -122,9 +138,6 @@ exports.sendSameDayReminders = onSchedule(
       `sendSameDayReminders: window=[${windowStart.toISOString()}, ` +
         `${windowEnd.toISOString()}] fetched=${snap.size} active=${active.length}`,
     );
-
-    let created = 0;
-    let skipped = 0;
 
     for (const doc of active) {
       const appt = doc.data();
@@ -197,6 +210,105 @@ exports.sendSameDayReminders = onSchedule(
       } catch (e) {
         console.error(
           `sendSameDayReminders: fcm non-fatal appt=${appointmentId}: ${e.message}`,
+        );
+      }
+    }
+
+    // ── Lab/imaging appointments (clinical_requests) ───────────────────────────
+    // Patient self-booked lab appointments use slotStartAt (Timestamp) as the
+    // canonical slot time. Filter client-side for patient-booked ones only.
+    const labSnap = await db
+      .collection('clinical_requests')
+      .where('slotStartAt', '>=', Timestamp.fromDate(windowStart))
+      .where('slotStartAt', '<=', Timestamp.fromDate(windowEnd))
+      .get();
+
+    const labActive = labSnap.docs.filter((d) => {
+      const r = d.data();
+      return (
+        r.source             === 'scheduled' &&
+        r.createdByRole      === 'patient'   &&
+        r.requestDestination === 'partner'   &&
+        !!r.patientId        &&
+        !LAB_SKIP_PARTNER_STATUSES.has(r.partnerStatus) &&
+        !SKIP_STATUSES.has(r.status)
+      );
+    });
+
+    console.log(
+      `sendSameDayReminders lab: window=[${windowStart.toISOString()}, ` +
+      `${windowEnd.toISOString()}] fetched=${labSnap.size} active=${labActive.length}`,
+    );
+
+    for (const doc of labActive) {
+      const req       = doc.data();
+      const requestId = doc.id;
+
+      // Lab appointments are always self-booked — recipient is the patient.
+      const recipientUid = req.patientId;
+
+      const labReminderId = `reminder_${requestId}_same_day`;
+      const labNotifRef   = db
+        .collection('users')
+        .doc(recipientUid)
+        .collection('notifications')
+        .doc(labReminderId);
+
+      // Idempotent: skip if already written
+      const labExisting = await labNotifRef.get();
+      if (labExisting.exists) {
+        skipped++;
+        continue;
+      }
+
+      const nameEn = req.providerName_en || req.providerName || '';
+      const nameAr = req.providerName_ar || req.providerName || '';
+      const nameKu = req.providerName_ku || req.providerName || '';
+
+      await labNotifRef.set({
+        type:              'lab_appointment',
+        subtype:           'same_day',
+        clinicalRequestId: requestId,
+        providerName_en:   req.providerName_en || '',
+        providerName_ar:   req.providerName_ar || '',
+        providerName_ku:   req.providerName_ku || '',
+        appointmentAt:     req.slotStartAt || null,
+        dateKey:           req.dateKey || '',
+        titleEn: 'Lab Appointment in About 2 Hours',
+        titleAr: 'موعد المختبر بعد ساعتين تقريباً',
+        titleKu: 'نیشتەجێبوونی تاقیگە لە نزیکەی ٢ کاتژمێردا',
+        bodyEn: `Your lab appointment at ${nameEn || 'the laboratory'} starts in approximately 2 hours.`,
+        bodyAr: `موعد مختبرك في ${nameAr || 'المختبر'} يبدأ بعد ساعتين تقريباً.`,
+        bodyKu: `نیشتەجێبوونی تاقیگەکەت لە ${nameKu || 'تاقیگەکە'} لە نزیکەی ٢ کاتژمێردا دەستپێدەکات.`,
+        isRead:    false,
+        dismissed: false,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      created++;
+
+      // Fan out FCM push — non-fatal; Firestore notification already written.
+      try {
+        const fcm = await sendFcmPush(
+          db,
+          recipientUid,
+          {
+            titleEn: 'Lab Appointment in About 2 Hours',
+            titleAr: 'موعد المختبر بعد ساعتين تقريباً',
+            titleKu: 'نیشتەجێبوونی تاقیگە لە نزیکەی ٢ کاتژمێردا',
+            bodyEn: `Your lab appointment at ${nameEn || 'the laboratory'} starts in approximately 2 hours.`,
+            bodyAr: `موعد مختبرك في ${nameAr || 'المختبر'} يبدأ بعد ساعتين تقريباً.`,
+            bodyKu: `نیشتەجێبوونی تاقیگەکەت لە ${nameKu || 'تاقیگەکە'} لە نزیکەی ٢ کاتژمێردا دەستپێدەکات.`,
+          },
+          { clinicalRequestId: requestId },
+        );
+        console.log(
+          `sendSameDayReminders lab: fcm req=${requestId}` +
+          ` sent=${fcm.sent} cleaned=${fcm.cleaned}`,
+        );
+      } catch (e) {
+        console.error(
+          `sendSameDayReminders lab: fcm non-fatal req=${requestId}: ${e.message}`,
         );
       }
     }

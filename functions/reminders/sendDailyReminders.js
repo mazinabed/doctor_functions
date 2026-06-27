@@ -4,17 +4,18 @@
  * sendDailyReminders
  *
  * Fires daily at 09:00 Baghdad time (06:00 UTC).
- * Creates 2-day and 1-day appointment reminder notifications.
+ * Creates 2-day and 1-day appointment reminder notifications for both
+ * doctor appointments (appointments collection) and patient-self-booked
+ * lab/imaging appointments (clinical_requests collection).
  *
  * Design:
- *   - Queries appointments by dateKey ('YYYY-MM-DD' in Baghdad time, UTC+3)
- *   - Filters cancelled/completed client-side to avoid requiring a composite index
- *   - Recipient: bookedByUserId when it differs from patientId (family/staff booking),
- *     otherwise patientId
- *   - Deterministic doc ID: reminder_{appointmentId}_{subtype}
- *     — existence check prevents duplicates on re-runs
- *   - After writing a NEW notification doc, fans out FCM push to stored device tokens
- *   - FCM failure is non-fatal — the Firestore notification is always written first
+ *   - Queries by dateKey ('YYYY-MM-DD' in Baghdad time, UTC+3)
+ *   - Filters cancelled/completed client-side to avoid composite indexes
+ *   - Doctor appointments: recipient is bookedByUserId when it differs from
+ *     patientId (family/staff booking), otherwise patientId
+ *   - Lab appointments: recipient is always patientId (self-booked)
+ *   - Deterministic doc IDs prevent duplicates on re-runs
+ *   - FCM failure is non-fatal — Firestore notification is always written first
  *   - Admin SDK bypasses Firestore security rules
  */
 
@@ -23,6 +24,9 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getMessaging } = require('firebase-admin/messaging');
 
 const SKIP_STATUSES = new Set(['cancelled', 'completed']);
+
+// Lab appointment partnerStatus values that should not receive reminders.
+const LAB_SKIP_PARTNER_STATUSES = new Set(['cancelled', 'completed', 'noshow', 'rejected']);
 
 const SUBTYPES = [
   { offset: 2, subtype: '2_day' },
@@ -40,6 +44,7 @@ function baghdadDateKey(offsetDays) {
   return `${y}-${m}-${d}`;
 }
 
+// ─── Doctor appointment reminder content ──────────────────────────────────────
 function buildContent(subtype, appt) {
   const nameEn = appt.doctorName_en || appt.doctorName || '';
   const nameAr = appt.doctorName_ar || appt.doctorName || '';
@@ -65,12 +70,40 @@ function buildContent(subtype, appt) {
   };
 }
 
+// ─── Lab appointment reminder content ─────────────────────────────────────────
+function buildLabReminderContent(subtype, req) {
+  const nameEn = req.providerName_en || req.providerName || '';
+  const nameAr = req.providerName_ar || req.providerName || '';
+  const nameKu = req.providerName_ku || req.providerName || '';
+
+  if (subtype === '2_day') {
+    return {
+      titleEn: 'Lab Appointment in 2 Days',
+      titleAr: 'موعد المختبر بعد يومين',
+      titleKu: 'نیشتەجێبوونی تاقیگە لە ٢ ڕۆژدا',
+      bodyEn: `Your lab appointment at ${nameEn || 'the laboratory'} is in 2 days.`,
+      bodyAr: `موعد مختبرك في ${nameAr || 'المختبر'} بعد يومين.`,
+      bodyKu: `نیشتەجێبوونی تاقیگەکەت لە ${nameKu || 'تاقیگەکە'} لە ٢ ڕۆژدایە.`,
+    };
+  }
+  return {
+    titleEn: 'Lab Appointment Tomorrow',
+    titleAr: 'موعد المختبر غداً',
+    titleKu: 'نیشتەجێبوونی تاقیگە بەیانی',
+    bodyEn: `Your lab appointment at ${nameEn || 'the laboratory'} is tomorrow.`,
+    bodyAr: `موعد مختبرك في ${nameAr || 'المختبر'} غداً.`,
+    bodyKu: `نیشتەجێبوونی تاقیگەکەت لە ${nameKu || 'تاقیگەکە'} بەیانییە.`,
+  };
+}
+
 // ─── FCM fan-out ──────────────────────────────────────────────────────────────
 // Sends push notifications to all stored FCM tokens for a recipient.
 // Groups tokens by language so each device receives its preferred locale.
 // Cleans up invalid/expired tokens automatically.
 // Non-fatal: caller continues on any error.
-async function sendFcmPush(db, recipientUid, notifContent) {
+// dataPayload overrides the default { appointmentId } — pass
+// { clinicalRequestId } for lab appointment reminders.
+async function sendFcmPush(db, recipientUid, notifContent, dataPayload) {
   const tokensSnap = await db
     .collection('users')
     .doc(recipientUid)
@@ -105,7 +138,9 @@ async function sendFcmPush(db, recipientUid, notifContent) {
       const response = await messaging.sendEachForMulticast({
         tokens,
         notification: { title, body },
-        data: { appointmentId: notifContent.appointmentId || '' },
+        data: dataPayload !== undefined
+          ? dataPayload
+          : { appointmentId: notifContent.appointmentId || '' },
         webpush: {
           notification: {
             icon:  '/icons/Icon-192.png',
@@ -166,6 +201,7 @@ exports.sendDailyReminders = onSchedule(
     for (const { offset, subtype } of SUBTYPES) {
       const targetDateKey = baghdadDateKey(offset);
 
+      // ── Doctor appointments ──────────────────────────────────────────────────
       const snap = await db
         .collection('appointments')
         .where('dateKey', '==', targetDateKey)
@@ -258,6 +294,96 @@ exports.sendDailyReminders = onSchedule(
         } catch (e) {
           console.error(
             `sendDailyReminders [${subtype}]: fcm non-fatal appt=${appointmentId}: ${e.message}`,
+          );
+        }
+      }
+
+      // ── Lab/imaging appointments (clinical_requests) ─────────────────────────
+      // Patient self-booked lab appointments live in clinical_requests, not
+      // appointments. Query by dateKey (same Baghdad-local YYYY-MM-DD) and
+      // filter client-side to avoid composite index requirements.
+      const labSnap = await db
+        .collection('clinical_requests')
+        .where('dateKey', '==', targetDateKey)
+        .get();
+
+      const labActive = labSnap.docs.filter((d) => {
+        const r = d.data();
+        return (
+          r.source             === 'scheduled' &&
+          r.createdByRole      === 'patient'   &&
+          r.requestDestination === 'partner'   &&
+          !!r.patientId        &&
+          !LAB_SKIP_PARTNER_STATUSES.has(r.partnerStatus) &&
+          !SKIP_STATUSES.has(r.status)
+        );
+      });
+
+      console.log(
+        `sendDailyReminders [${subtype}] lab: queried_dateKey=${targetDateKey}` +
+        ` fetched=${labSnap.size} active=${labActive.length}`,
+      );
+
+      for (const doc of labActive) {
+        const req       = doc.data();
+        const requestId = doc.id;
+
+        // Lab appointments are always self-booked — recipient is the patient.
+        const recipientUid = req.patientId;
+
+        const labReminderId = `reminder_${requestId}_${subtype}`;
+        const labNotifRef   = db
+          .collection('users')
+          .doc(recipientUid)
+          .collection('notifications')
+          .doc(labReminderId);
+
+        // Idempotent: skip if already written
+        const labExisting = await labNotifRef.get();
+        if (labExisting.exists) {
+          skipped++;
+          continue;
+        }
+
+        const labContent = buildLabReminderContent(subtype, req);
+
+        await labNotifRef.set({
+          type:              'lab_appointment',
+          subtype,
+          clinicalRequestId: requestId,
+          providerName_en:   req.providerName_en || '',
+          providerName_ar:   req.providerName_ar || '',
+          providerName_ku:   req.providerName_ku || '',
+          appointmentAt:     req.slotStartAt || null,
+          dateKey:           req.dateKey || targetDateKey,
+          titleEn:   labContent.titleEn,
+          titleAr:   labContent.titleAr,
+          titleKu:   labContent.titleKu,
+          bodyEn:    labContent.bodyEn,
+          bodyAr:    labContent.bodyAr,
+          bodyKu:    labContent.bodyKu,
+          isRead:    false,
+          dismissed: false,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+
+        created++;
+
+        // Fan out FCM push — non-fatal; Firestore notification already written.
+        try {
+          const fcm = await sendFcmPush(
+            db,
+            recipientUid,
+            { ...labContent },
+            { clinicalRequestId: requestId },
+          );
+          console.log(
+            `sendDailyReminders [${subtype}] lab: fcm req=${requestId}` +
+            ` sent=${fcm.sent} cleaned=${fcm.cleaned}`,
+          );
+        } catch (e) {
+          console.error(
+            `sendDailyReminders [${subtype}] lab: fcm non-fatal req=${requestId}: ${e.message}`,
           );
         }
       }

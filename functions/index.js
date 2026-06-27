@@ -2110,6 +2110,17 @@ const { onClinicalReferralStatusUpdated } = require('./notifications/onClinicalR
 exports.onClinicalReferralCreated       = onClinicalReferralCreated;
 exports.onClinicalReferralStatusUpdated = onClinicalReferralStatusUpdated;
 
+// ─── Lab Appointment Notifications Domain ──────────────────────────────────────
+// Handles patient-self-booked lab/imaging appointments (clinical_requests where
+// source='scheduled' and createdByRole='patient'):
+//   onLabAppointmentCreated       — sends 'request_sent' notification on booking
+//   onLabAppointmentStatusUpdated — sends 'confirmed' or 'cancelled' on status change
+const { onLabAppointmentCreated } = require('./notifications/onLabAppointmentCreated');
+const { onLabAppointmentStatusUpdated } = require('./notifications/onLabAppointmentStatusUpdated');
+
+exports.onLabAppointmentCreated       = onLabAppointmentCreated;
+exports.onLabAppointmentStatusUpdated = onLabAppointmentStatusUpdated;
+
 // ─── Schedule Guard Domain ─────────────────────────────────────────────────────
 // Server-side enforcement for protected schedule operations.
 // All six functions use Firestore transactions to atomically validate
