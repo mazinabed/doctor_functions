@@ -119,7 +119,8 @@ exports.onLabAppointmentCreated = onDocumentCreated(
       return;
     }
 
-    const patientId = data.patientId;
+    const patientId   = data.patientId;
+    const isHomeVisit = data.visitType === 'homeVisit';
 
     const notifId  = `lab_appt_created_${requestId}`;
     const notifRef = db
@@ -135,14 +136,23 @@ exports.onLabAppointmentCreated = onDocumentCreated(
       return;
     }
 
-    const content = {
-      titleEn: 'Laboratory appointment request sent',
-      titleAr: 'تم إرسال طلب موعد المختبر',
-      titleKu: 'داواکاری نیشتەجێبوونی تاقیگە نێردرا',
-      bodyEn:  'Your request has been sent and is awaiting confirmation.',
-      bodyAr:  'تم إرسال طلبك وهو في انتظار التأكيد.',
-      bodyKu:  'داواکاریەکەت نێردرا و چاوەڕوانی پشتڕاستکردنەوەیە.',
-    };
+    const content = isHomeVisit
+      ? {
+          titleEn: 'Home visit appointment request sent',
+          titleAr: 'تم إرسال طلب الزيارة المنزلية',
+          titleKu: 'داواکاری سەردانی ماڵ نێردرا',
+          bodyEn:  'Your home visit request has been sent and is awaiting confirmation.',
+          bodyAr:  'تم إرسال طلب الزيارة المنزلية وهو في انتظار التأكيد.',
+          bodyKu:  'داواکاری سەردانی ماڵەکەت نێردرا و چاوەڕوانی پشتڕاستکردنەوەیە.',
+        }
+      : {
+          titleEn: 'Laboratory appointment request sent',
+          titleAr: 'تم إرسال طلب موعد المختبر',
+          titleKu: 'داواکاری نیشتەجێبوونی تاقیگە نێردرا',
+          bodyEn:  'Your request has been sent and is awaiting confirmation.',
+          bodyAr:  'تم إرسال طلبك وهو في انتظار التأكيد.',
+          bodyKu:  'داواکاریەکەت نێردرا و چاوەڕوانی پشتڕاستکردنەوەیە.',
+        };
 
     await notifRef.set({
       type:              'lab_appointment',
@@ -164,7 +174,8 @@ exports.onLabAppointmentCreated = onDocumentCreated(
 
     console.log(
       `onLabAppointmentCreated: wrote ${notifId} patient=${patientId}` +
-      ` provider=${data.providerName_en || '(unnamed)'}`,
+      ` provider=${data.providerName_en || '(unnamed)'}` +
+      ` visitType=${data.visitType || 'inPerson'}`,
     );
 
     // FCM push — non-fatal; Firestore notification already written.
