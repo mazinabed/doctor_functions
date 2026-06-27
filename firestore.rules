@@ -1830,20 +1830,20 @@ service cloud.firestore {
       //
       // Lab/imaging service catalog. Provider-owned; immutable once archived.
       //
-      // Read:   lab members/owner see all; authenticated patients see only
-      //         active + onlineBookingEnabled + non-archived services.
+      // Read:   lab members/owner/admin see all services; public (unauthenticated)
+      //         users can read only active + onlineBookingEnabled + non-archived.
+      //         This allows QR-scan patients to browse the booking catalog without
+      //         being signed in, while keeping internal/archived services private.
       // Create: lab admin or owner only. Cannot set isArchived: true on create.
       // Update: lab admin or owner; cannot un-archive (isArchived is one-way).
       // Delete: never — use isArchived: true for soft-delete.
       // ─────────────────────────────────────────────────────────────────────
       match /services/{serviceId} {
-        allow read: if isSignedIn()
-          && (isLabMember(uid)
-              || isLabOwner(uid)
-              || isAdmin()
-              || (resource.data.isActive == true
-                  && resource.data.onlineBookingEnabled == true
-                  && resource.data.get('isArchived', false) == false));
+        allow read: if (resource.data.isActive == true
+              && resource.data.onlineBookingEnabled == true
+              && resource.data.get('isArchived', false) == false)
+          || (isSignedIn()
+              && (isLabMember(uid) || isLabOwner(uid) || isAdmin()));
 
         allow create: if isSignedIn()
           && (isLabOwner(uid) || isLabAdminMember(uid))
