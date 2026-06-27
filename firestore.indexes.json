@@ -470,6 +470,14 @@
         { "fieldPath": "dateKey",            "order": "ASCENDING" },
         { "fieldPath": "partnerStatus",      "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "patient_referral_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "patientId",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

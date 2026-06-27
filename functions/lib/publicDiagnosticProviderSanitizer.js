@@ -158,6 +158,15 @@ function buildPublicProviderDoc(providerId, data, existingPublicData, resolvedCe
     // ── Public contact ────────────────────────────────────────────────────────
     phone,
 
+    // ── Social links (forwarded only when the provider has opted in) ──────────
+    showSocialLinks: data.showSocialLinks === true,
+    socialLinks:
+      data.showSocialLinks === true &&
+      data.socialLinks != null &&
+      typeof data.socialLinks === "object"
+        ? { ...data.socialLinks }
+        : {},
+
     // ── Status / visibility ───────────────────────────────────────────────────
     status:     "active",
     isActive:   true,

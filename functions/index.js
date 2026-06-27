@@ -2100,6 +2100,16 @@ const { sendSameDayReminders } = require('./reminders/sendSameDayReminders');
 exports.sendDailyReminders = sendDailyReminders;
 exports.sendSameDayReminders = sendSameDayReminders;
 
+// ─── Patient Referral Notifications Domain ─────────────────────────────────────
+// Handles doctor-created external partner referrals:
+//   onClinicalReferralCreated       — creates patient_referral_requests + notification
+//   onClinicalReferralStatusUpdated — mirrors safe status fields on change
+const { onClinicalReferralCreated } = require('./notifications/onClinicalReferralCreated');
+const { onClinicalReferralStatusUpdated } = require('./notifications/onClinicalReferralStatusUpdated');
+
+exports.onClinicalReferralCreated       = onClinicalReferralCreated;
+exports.onClinicalReferralStatusUpdated = onClinicalReferralStatusUpdated;
+
 // ─── Schedule Guard Domain ─────────────────────────────────────────────────────
 // Server-side enforcement for protected schedule operations.
 // All six functions use Firestore transactions to atomically validate

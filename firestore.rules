@@ -703,6 +703,41 @@ service cloud.firestore {
 
 
     // ───────────────────────────────────────────────────────────────────────
+    // patient_referral_requests/{referralId}
+    //
+    // Safe patient-facing view of a doctor-created external partner referral.
+    // Document ID == clinical_requests doc ID (same key for easy cross-reference).
+    //
+    // Security model:
+    //   This document intentionally contains ONLY safe referral metadata:
+    //   provider info, service name, instructions, and live status fields.
+    //   It NEVER contains resultNote, resultItems, technician notes, attachments,
+    //   or any unreleased clinical data.
+    //
+    //   All writes are performed by Cloud Functions (Admin SDK bypasses rules).
+    //   No client writes are permitted.
+    //   clinical_requests rules are UNCHANGED — patients never read that collection
+    //   via this flow.
+    //
+    // Read access:
+    //   Patient reads own referral documents only (patientId == auth.uid).
+    //   Admin reads for support.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /patient_referral_requests/{referralId} {
+      // Patient reads their own referral view.
+      allow read: if isSignedIn()
+        && resource.data.patientId == request.auth.uid;
+
+      // Admin reads for support.
+      allow read: if isAdmin();
+
+      // All writes via Cloud Functions (Admin SDK — no rule required).
+      allow write: if false;
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
     // patient_visit_notes/{appointmentId}
     //
     // Document ID == appointmentId (deterministic: one note per appointment).
