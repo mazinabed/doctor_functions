@@ -1826,6 +1826,38 @@ service cloud.firestore {
 
       allow delete: if isAdmin();
 
+      // ── diagnostic_providers/{labId}/services/{serviceId} ─────────────────
+      //
+      // Lab/imaging service catalog. Provider-owned; immutable once archived.
+      //
+      // Read:   lab members/owner see all; authenticated patients see only
+      //         active + onlineBookingEnabled + non-archived services.
+      // Create: lab admin or owner only. Cannot set isArchived: true on create.
+      // Update: lab admin or owner; cannot un-archive (isArchived is one-way).
+      // Delete: never — use isArchived: true for soft-delete.
+      // ─────────────────────────────────────────────────────────────────────
+      match /services/{serviceId} {
+        allow read: if isSignedIn()
+          && (isLabMember(uid)
+              || isLabOwner(uid)
+              || isAdmin()
+              || (resource.data.isActive == true
+                  && resource.data.onlineBookingEnabled == true
+                  && resource.data.get('isArchived', false) == false));
+
+        allow create: if isSignedIn()
+          && (isLabOwner(uid) || isLabAdminMember(uid))
+          && request.resource.data.providerId == uid
+          && request.resource.data.get('isArchived', false) == false;
+
+        allow update: if isSignedIn()
+          && (isLabOwner(uid) || isLabAdminMember(uid))
+          && !(resource.data.get('isArchived', false) == true
+               && request.resource.data.get('isArchived', false) == false);
+
+        allow delete: if false;
+      }
+
       // ── diagnostic_providers/{labId}/lab_members/{memberId} ───────────────
       //
       // Lab staff membership subcollection.

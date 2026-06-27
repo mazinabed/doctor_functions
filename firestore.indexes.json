@@ -478,6 +478,33 @@
         { "fieldPath": "patientId",  "order": "ASCENDING" },
         { "fieldPath": "createdAt",  "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "services",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isArchived",    "order": "ASCENDING" },
+        { "fieldPath": "displayOrder",  "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "services",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isActive",              "order": "ASCENDING" },
+        { "fieldPath": "onlineBookingEnabled",  "order": "ASCENDING" },
+        { "fieldPath": "isArchived",            "order": "ASCENDING" },
+        { "fieldPath": "displayOrder",          "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "services",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isArchived",    "order": "ASCENDING" },
+        { "fieldPath": "category",      "order": "ASCENDING" },
+        { "fieldPath": "displayOrder",  "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
