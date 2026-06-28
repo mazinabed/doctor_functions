@@ -459,6 +459,7 @@ service cloud.firestore {
 
         allow update, delete: if isAdmin();
       }
+
     }
 
 
@@ -1088,6 +1089,36 @@ service cloud.firestore {
           && request.resource.data.createdAt == resource.data.createdAt;
 
         // No delete — archive via isActive = false (update path above)
+      }
+
+      // ── medical_centers/{centerId}/visit_templates/{templateId} ──────────
+      //
+      // Center-owned after-visit note templates. Selecting inserts content
+      // into the clinical note editor; doctors edit freely before saving.
+      //
+      // READ:   any signed-in center member (doctor, nurse, receptionist, manager).
+      // CREATE: center admin only. centerId must match path; isActive must be true;
+      //         createdByUid must equal the caller's uid.
+      // UPDATE: center admin only. Immutable: centerId, createdByUid, createdAt.
+      //         Archive: isActive=false + isArchived=true. Restore: inverse.
+      // DELETE: forbidden — archive only (soft-delete).
+      //
+      match /visit_templates/{templateId} {
+        allow read: if isSignedIn() && isCenterMember(centerId);
+
+        allow create: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == centerId
+          && request.resource.data.isActive == true
+          && request.resource.data.createdByUid == request.auth.uid;
+
+        allow update: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && request.resource.data.centerId == resource.data.centerId
+          && request.resource.data.createdByUid == resource.data.createdByUid
+          && request.resource.data.createdAt == resource.data.createdAt;
+
+        allow delete: if false;
       }
     }
 
@@ -1922,6 +1953,37 @@ service cloud.firestore {
           || (isLabAdminMember(uid)
               && resource.data.get('uid', '') != request.auth.uid
               && resource.data.get('role', '') != 'lab_admin');
+      }
+
+      // ── diagnostic_providers/{labId}/clinical_templates/{templateId} ──────
+      //
+      // Lab/imaging reusable clinical request templates.
+      // Same schema as medical_centers/.../clinical_templates.
+      // centerId field stores labId as the scope identifier.
+      //
+      // Read:   any active lab member or owner can browse.
+      // Create: lab admin or owner only. isActive must start true, version=1.
+      // Update: lab admin or owner only. centerId/createdBy/createdAt/version
+      //         are immutable and may not be touched after creation.
+      // Delete: never — archive via isActive=false.
+      // ──────────────────────────────────────────────────────────────────────
+      match /clinical_templates/{templateId} {
+        allow read: if isSignedIn()
+          && (isLabMember(uid) || isLabOwner(uid) || isAdmin());
+
+        allow create: if isSignedIn()
+          && (isLabOwner(uid) || isLabAdminMember(uid))
+          && request.resource.data.get('centerId', '') == uid
+          && request.resource.data.get('isActive', false) == true
+          && request.resource.data.get('version', 0) == 1;
+
+        allow update: if isSignedIn()
+          && (isLabOwner(uid) || isLabAdminMember(uid))
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+               'centerId', 'createdBy', 'createdAt', 'version'
+             ]);
+
+        allow delete: if false;
       }
     }
 

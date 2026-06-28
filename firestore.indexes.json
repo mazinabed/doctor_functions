@@ -216,6 +216,22 @@
       ]
     },
     {
+      "collectionGroup": "lab_members",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "uid",      "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "lab_members",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "phoneNormalized", "order": "ASCENDING" },
+        { "fieldPath": "status",          "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "clinical_requests",
       "queryScope": "COLLECTION",
       "fields": [
@@ -504,6 +520,23 @@
         { "fieldPath": "isArchived",    "order": "ASCENDING" },
         { "fieldPath": "category",      "order": "ASCENDING" },
         { "fieldPath": "displayOrder",  "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "visit_templates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isActive",      "order": "ASCENDING" },
+        { "fieldPath": "displayOrder",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt",     "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "visit_templates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "displayOrder",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt",     "order": "ASCENDING" }
       ]
     }
   ],
