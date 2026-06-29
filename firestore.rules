@@ -801,6 +801,55 @@ service cloud.firestore {
            ]);
 
       // Notes are permanent records — no client-side delete.
+
+      // ── Visit note photos subcollection ─────────────────────────────
+      //
+      // patient_visit_notes/{appointmentId}/photos/{photoId}
+      //
+      // Clinical photos attached to a visit note (Phase 1).
+      //
+      // Privacy:
+      //   Doctor who owns the note → full read + create + soft-delete
+      //   Admin                    → read only
+      //   Center staff / patient   → intentionally NO access
+      //
+      // Soft-delete only: [isDeleted] is flipped to true.
+      // Physical Storage objects are retained for future purge.
+      match /photos/{photoId} {
+        // Doctor who owns the appointment reads their photos.
+        // get:  resource.data is available — check doctorId directly.
+        // list: resource.data is NOT available for queries — cross-reference
+        //       the appointments collection to verify ownership instead.
+        allow get:  if isSignedIn()
+          && isDoctor()
+          && resource.data.doctorId == request.auth.uid;
+        allow list: if isSignedIn()
+          && isDoctor()
+          && get(/databases/$(database)/documents/appointments/$(appointmentId)).data.doctorId == request.auth.uid;
+
+        // Admin read access.
+        allow read: if isAdmin();
+
+        // Doctor creates a photo — ownership and mandatory field validation.
+        // appointmentId in payload must match the parent document path.
+        allow create: if isSignedIn()
+          && isDoctor()
+          && request.resource.data.doctorId == request.auth.uid
+          && request.resource.data.appointmentId == appointmentId
+          && request.resource.data.uploadedByUid == request.auth.uid
+          && request.resource.data.isDeleted == false
+          && request.resource.data.storagePath is string
+          && request.resource.data.downloadUrl is string;
+
+        // Soft-delete: doctor may flip isDeleted to true, nothing else.
+        allow update: if isSignedIn()
+          && resource.data.doctorId == request.auth.uid
+          && request.resource.data.diff(resource.data)
+               .affectedKeys().hasOnly(['isDeleted']);
+
+        // Physical deletion blocked — soft-delete model only.
+        allow delete: if false;
+      }
     }
 
 

@@ -106,6 +106,32 @@ service firebase.storage {
         && fileName == request.auth.uid + '.jpg';
     }
 
+    // ── Visit note photos ─────────────────────────────────────────────────
+    // Path: visit_note_photos/{centerId}/{appointmentId}/{photoId}
+    //
+    // Clinical photos attached to a doctor's visit note (Phase 1).
+    // Not patient-visible. No public read.
+    //
+    // READ:   any authenticated user — storagePath and downloadUrl are only
+    //         discoverable via the Firestore photos subcollection, which is
+    //         gated to the owning doctor. Auth-only prevents unauthenticated
+    //         enumeration.
+    //
+    // CREATE: authenticated; JPEG, PNG, or WebP; ≤ 5 MB.
+    //         Firestore rules enforce doctor ownership on the parallel doc.
+    //
+    // UPDATE: never — photos are immutable objects in Storage.
+    // DELETE: never from client — soft-delete via Firestore [isDeleted] flag.
+    //         Physical purge is Cloud Function territory (future phase).
+    match /visit_note_photos/{centerId}/{appointmentId}/{photoId} {
+      allow read:   if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/jpeg|image/png|image/webp');
+      allow update: if false;
+      allow delete: if false;
+    }
+
     // ── Clinical attachments ──────────────────────────────────────────────
     // Path: clinical_attachments/{centerId}/{requestId}/{attachmentId}
     //
