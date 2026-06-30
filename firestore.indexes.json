@@ -9,6 +9,14 @@
       ]
     },
     {
+      "collectionGroup": "pharmacy_providers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "submittedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "diagnostic_providers",
       "queryScope": "COLLECTION",
       "fields": [
@@ -225,6 +233,22 @@
     },
     {
       "collectionGroup": "lab_members",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "phoneNormalized", "order": "ASCENDING" },
+        { "fieldPath": "status",          "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pharmacy_members",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "uid",      "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pharmacy_members",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
         { "fieldPath": "phoneNormalized", "order": "ASCENDING" },

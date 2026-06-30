@@ -180,13 +180,16 @@ service cloud.firestore {
         && request.resource.data.canCall == false;
     }
 
-    // A lab/imaging provider writes diagnostic_providers/{uid} and simultaneously
+    // A lab/imaging/pharmacy provider writes their provider doc and simultaneously
     // marks their stale doctors/{uid} draft as converted. This is the only path
-    // where status may move from onboarding → converted_to_diagnostic_provider
+    // where status may move from onboarding → converted_to_*_provider
     // from the client. Privilege-escalation fields must not be touched.
     function isConvertedToProviderTransition() {
       return resource.data.get('status', '') == 'onboarding'
-        && request.resource.data.status == 'converted_to_diagnostic_provider'
+        && request.resource.data.status in [
+             'converted_to_diagnostic_provider',
+             'converted_to_pharmacy_provider'
+           ]
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
              'isActive', 'isVerified', 'verificationStatus',
              'canBook', 'canCall',
@@ -249,6 +252,34 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid))
         && get(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid)).data.get('role', '') == 'lab_admin'
         && get(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid)).data.get('isActive', false) == true;
+    }
+
+    // ── Pharmacy helper functions ────────────────────────────────────────────
+    // Scoped to pharmacy_providers/{pharmacyId}/pharmacy_members — separate
+    // subcollection from center 'members' and from 'lab_members', so no
+    // collectionGroup collision is possible across provider types.
+
+    // Pharmacy member: caller has a pharmacy_members doc in the given pharmacy.
+    function isPharmacyMember(pharmacyId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)/pharmacy_members/$(request.auth.uid));
+    }
+
+    // Pharmacy owner: the pharmacy_providers doc's userId matches the caller.
+    function isPharmacyOwner(pharmacyId) {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)).data.userId == request.auth.uid;
+    }
+
+    // Pharmacy admin via pharmacy_members subcollection — source of truth for
+    // admin access. Mirrors isLabAdminMember; role value is 'pharmacy_admin'.
+    function isPharmacyAdminMember(pharmacyId) {
+      return isSignedIn()
+        && pharmacyId is string
+        && pharmacyId.size() > 0
+        && exists(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)/pharmacy_members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)/pharmacy_members/$(request.auth.uid)).data.get('role', '') == 'pharmacy_admin'
+        && get(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)/pharmacy_members/$(request.auth.uid)).data.get('isActive', false) == true;
     }
 
     // Detects whether a write touches the accountLifecycle sub-object.
@@ -1440,6 +1471,22 @@ service cloud.firestore {
         && resource.data.uid == request.auth.uid;
     }
 
+    // Collection group: pharmacy_members
+    //
+    // Authorizes collectionGroup('pharmacy_members').where('uid', isEqualTo: uid)
+    // queries fired on startup by pharmacyScopeProvider and doctorStartupProvider
+    // IDENTITY #1C to resolve pharmacy staff identity.
+    // Separate from 'members' and 'lab_members' — no overlap with other staff
+    // collectionGroup queries.
+    // A user may only read pharmacy_members documents where uid == their own auth uid.
+    // Write access is governed by the nested rule inside pharmacy_providers only.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /{path=**}/pharmacy_members/{memberId} {
+      allow read: if isSignedIn()
+        && resource.data.uid == request.auth.uid;
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // Clinical Requests
@@ -2033,6 +2080,151 @@ service cloud.firestore {
              ]);
 
         allow delete: if false;
+      }
+    }
+
+
+    // ───────────────────────────────────────────────────────────────────────
+    // pharmacy_providers/{uid}
+    //
+    // Pharmacy providers registered through the doctor portal onboarding flow.
+    // Provider kind: 'pharmacy' (stored in providerKind + serviceGroup).
+    //
+    // Architectural mirror of diagnostic_providers — pharmacies are a separate
+    // first-class provider type, not nested inside diagnostic_providers.
+    //
+    // Read:   own doc, admin only.
+    //         Public discovery (if needed) uses a future public_providers
+    //         projection (Phase 2).
+    // Create: provider self-registration during onboarding submit (uid must match).
+    //         Same transaction writes users/{uid}.role = 'pharmacy_provider'.
+    // Update: provider may update own profile fields;
+    //         admin-controlled fields (status, isVerified, isActive, trial fields)
+    //         are protected and require admin or Cloud Functions to change.
+    // Delete: admin only.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /pharmacy_providers/{uid} {
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid || isAdmin());
+
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.isActive == false
+        && request.resource.data.isVerified == false;
+
+      allow update: if isAdmin()
+        || (isSignedIn()
+            && request.auth.uid == uid
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                 'status', 'isVerified', 'isActive',
+                 'subscriptionStatus', 'trialStart', 'trialEnds',
+                 'verificationStatus', 'submittedAt'
+               ]));
+
+      allow delete: if isAdmin();
+
+      // ── pharmacy_providers/{pharmacyId}/services/{serviceId} ──────────────
+      //
+      // Pharmacy service catalog (products in Phase 2 — keeping 'services'
+      // collection name in Phase 1 to mirror Lab structure exactly).
+      // Provider-owned; immutable once archived.
+      //
+      // Read:   pharmacy members/owner/admin see all services; public
+      //         (unauthenticated) users can read only active +
+      //         onlineBookingEnabled + non-archived.
+      // Create: pharmacy admin or owner only. Cannot set isArchived: true on create.
+      // Update: pharmacy admin or owner; cannot un-archive (isArchived is one-way).
+      // Delete: never — use isArchived: true for soft-delete.
+      // ─────────────────────────────────────────────────────────────────────
+      match /services/{serviceId} {
+        allow read: if (resource.data.isActive == true
+              && resource.data.onlineBookingEnabled == true
+              && resource.data.get('isArchived', false) == false)
+          || (isSignedIn()
+              && (isPharmacyMember(uid) || isPharmacyOwner(uid) || isAdmin()));
+
+        allow create: if isSignedIn()
+          && (isPharmacyOwner(uid) || isPharmacyAdminMember(uid))
+          && request.resource.data.providerId == uid
+          && request.resource.data.get('isArchived', false) == false;
+
+        allow update: if isSignedIn()
+          && (isPharmacyOwner(uid) || isPharmacyAdminMember(uid))
+          && !(resource.data.get('isArchived', false) == true
+               && request.resource.data.get('isArchived', false) == false);
+
+        allow delete: if false;
+      }
+
+      // ── pharmacy_providers/{pharmacyId}/pharmacy_members/{memberId} ───────
+      //
+      // Pharmacy staff membership subcollection.
+      // Uses 'pharmacy_members' (NOT 'members' or 'lab_members') to avoid
+      // collisionWith the center collectionGroup('members') and the lab
+      // collectionGroup('lab_members') queries.
+      //
+      // Authority model mirrors diagnostic_providers/.../lab_members:
+      //   All write authority derives from isPharmacyAdminMember(pharmacyId)
+      //   or isPharmacyOwner. Self-protection: admins cannot modify their own
+      //   pharmacy_members doc. Target protection: pharmacy_admin records
+      //   cannot be updated by client writes. Promotion block: role cannot be
+      //   changed to 'pharmacy_admin' from the client. Field restriction:
+      //   updates limited to operational fields only.
+      //
+      match /pharmacy_members/{memberId} {
+        // READ: pharmacy members, owner, admin, or own record.
+        // resource.data.uid == request.auth.uid covers the collectionGroup
+        // startup query (first-login before isPharmacyMember resolves).
+        // NOTE: wildcard from parent match /pharmacy_providers/{uid} is 'uid',
+        //       not 'pharmacyId' — all helper calls must use 'uid' here.
+        allow read: if isSignedIn()
+          && (isPharmacyMember(uid)
+              || isPharmacyOwner(uid)
+              || isAdmin()
+              || resource.data.uid == request.auth.uid);
+
+        // CREATE path 1: Pharmacy admin founder self-membership.
+        // Only allowed when the parent pharmacy_providers doc already exists
+        // (pharmacy owner completed onboarding).
+        allow create: if isSignedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.role == 'pharmacy_admin'
+          && request.resource.data.isActive == true
+          && exists(/databases/$(database)/documents/pharmacy_providers/$(uid));
+
+        // CREATE path 2: Pharmacy admin or owner invites staff.
+        // Cannot create a pharmacy_admin member via this path.
+        allow create: if (isPharmacyOwner(uid) || isPharmacyAdminMember(uid))
+          && request.resource.data.get('role', '') != 'pharmacy_admin';
+
+        // UPDATE path 1: Scoped pharmacy admin.
+        // Self-protection: cannot update own record.
+        // Target protection: cannot update pharmacy_admin records.
+        // Promotion block: cannot promote to pharmacy_admin.
+        // Field restriction: only operational fields.
+        allow update: if isPharmacyAdminMember(uid)
+          && resource.data.get('uid', '') != request.auth.uid
+          && resource.data.get('role', '') != 'pharmacy_admin'
+          && request.resource.data.get('role', '') != 'pharmacy_admin'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'role', 'permissions', 'isActive', 'displayName',
+               'updatedAt', 'updatedBy',
+               'reactivatedBy', 'reactivatedAt', 'deactivatedBy', 'deactivatedAt'
+             ]);
+
+        // UPDATE path 2: Pharmacy owner or global admin — unrestricted.
+        allow update: if isPharmacyOwner(uid) || isAdmin();
+
+        // DELETE: cancel invitations or remove staff.
+        // Self-protection and target-protection apply.
+        allow delete: if isPharmacyOwner(uid)
+          || isAdmin()
+          || (isPharmacyAdminMember(uid)
+              && resource.data.get('uid', '') != request.auth.uid
+              && resource.data.get('role', '') != 'pharmacy_admin');
       }
     }
 

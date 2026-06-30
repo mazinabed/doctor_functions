@@ -14,22 +14,29 @@ function normalizeIraqi(input) {
 
 // Callable: activateStaffInvite
 //
-// Searches two invitation paths in order:
-//   1. medical_centers/{centerId}/members/{autoId}      — clinic staff
-//   2. diagnostic_providers/{labId}/lab_members/{autoId} — lab/imaging staff
+// Searches three invitation paths in order:
+//   1. medical_centers/{centerId}/members/{autoId}        — clinic staff
+//   2. diagnostic_providers/{labId}/lab_members/{autoId}  — lab/imaging staff
+//   3. pharmacy_providers/{pharmacyId}/pharmacy_members/{autoId} — pharmacy staff
 //
 // For whichever invite is found, runs a single Firestore transaction that:
-//   a. Creates the uid-keyed member doc (members/{uid} or lab_members/{uid})
+//   a. Creates the uid-keyed member doc (members/{uid}, lab_members/{uid},
+//      or pharmacy_members/{uid})
 //   b. Archives the auto-ID invite doc (status: 'archived')
 //   c. Writes/merges users/{uid} (never overwrites existing role)
 //
-// Returns: { activated: bool, centerId?, centerRole?, isLabMember?, labId?, labRole? }
+// Returns: { activated: bool,
+//            centerId?, centerRole?,
+//            isLabMember?, labId?, labRole?,
+//            isPharmacyMember?, pharmacyId?, pharmacyRole? }
 //
 // Requires Firestore composite indexes:
-//   collectionGroup(members):     phoneNormalized ASC, status ASC
-//   collectionGroup(members):     uid ASC, isActive ASC
-//   collectionGroup(lab_members): phoneNormalized ASC, status ASC
-//   collectionGroup(lab_members): uid ASC, isActive ASC
+//   collectionGroup(members):          phoneNormalized ASC, status ASC
+//   collectionGroup(members):          uid ASC, isActive ASC
+//   collectionGroup(lab_members):      phoneNormalized ASC, status ASC
+//   collectionGroup(lab_members):      uid ASC, isActive ASC
+//   collectionGroup(pharmacy_members): phoneNormalized ASC, status ASC
+//   collectionGroup(pharmacy_members): uid ASC, isActive ASC
 exports.activateStaffInvite = onCall({ region: "us-central1" }, async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "Must be signed in.");
@@ -268,6 +275,113 @@ exports.activateStaffInvite = onCall({ region: "us-central1" }, async (request) 
     return { activated: true, isLabMember: true, labId, labRole };
   }
 
+  // ─── PATH 3: PHARMACY STAFF (pharmacy_providers/*/pharmacy_members) ──────
+
+  const pharmacyInviteQuery = await db
+    .collectionGroup("pharmacy_members")
+    .where("phoneNormalized", "==", normalizedPhone)
+    .where("status", "==", "invited")
+    .limit(1)
+    .get();
+
+  console.log(`[activateStaffInvite] PATH3 pharmacy_members query: ${pharmacyInviteQuery.size} result(s)`);
+
+  if (!pharmacyInviteQuery.empty) {
+    const pharmacyInviteDoc = pharmacyInviteQuery.docs[0];
+    const pharmacyInviteRef = pharmacyInviteDoc.ref;
+    const pharmacyInviteData = pharmacyInviteDoc.data();
+    // Path: pharmacy_providers/{pharmacyId}/pharmacy_members/{autoId}
+    const pharmacyPathParts = pharmacyInviteRef.path.split("/");
+    const pharmacyId = pharmacyPathParts[1];
+    const pharmacyRole = pharmacyInviteData.role || "staff";
+    console.log(`[activateStaffInvite] Found pharmacy invite: pharmacyId=${pharmacyId} role=${pharmacyRole} inviteRef=${pharmacyInviteRef.path}`);
+    const displayName = pharmacyInviteData.displayName || null;
+    const phoneNumber = pharmacyInviteData.phoneNumber || null;
+    const permissions = pharmacyInviteData.permissions || null;
+
+    const pharmacyMemberRef = db
+      .collection("pharmacy_providers")
+      .doc(pharmacyId)
+      .collection("pharmacy_members")
+      .doc(uid);
+
+    const userRef = db.collection("users").doc(uid);
+
+    const txResult = await db.runTransaction(async (t) => {
+      // TOCTOU guard
+      const freshInvite = await t.get(pharmacyInviteRef);
+      if (!freshInvite.exists || freshInvite.data().status !== "invited") {
+        const freshMember = await t.get(pharmacyMemberRef);
+        if (freshMember.exists && freshMember.data().isActive === true) {
+          return { concurrent: true, success: true };
+        }
+        return { concurrent: true, success: false };
+      }
+
+      // Idempotency: uid-keyed pharmacy_members doc already active?
+      const memberSnap = await t.get(pharmacyMemberRef);
+      if (memberSnap.exists && memberSnap.data().isActive === true) {
+        return { concurrent: true, success: true };
+      }
+
+      const userSnap = await t.get(userRef);
+      const userExists = userSnap.exists;
+      const now = admin.firestore.FieldValue.serverTimestamp();
+
+      // 1. Create uid-keyed pharmacy_members doc — preserve role and permissions
+      //    from the invitation (written by the pharmacy admin at invite time).
+      t.set(pharmacyMemberRef, {
+        uid,
+        role: pharmacyRole,
+        isActive: true,
+        status: "active",
+        phoneNormalized: normalizedPhone,
+        ...(displayName && { displayName }),
+        ...(phoneNumber && { phoneNumber }),
+        ...(permissions && { permissions }),
+        joinedAt: now,
+        activatedFrom: pharmacyInviteRef.id,
+      });
+
+      // 2. Archive the auto-ID invite doc (preserve for audit trail)
+      t.update(pharmacyInviteRef, {
+        status: "archived",
+        activatedUid: uid,
+        activatedAt: now,
+      });
+
+      // 3. Write users/{uid}.
+      //    Do NOT set centerId — pharmacyScopeProvider resolves pharmacyId via
+      //    collectionGroup('pharmacy_members') when centerId is null, which is
+      //    the correct path for pharmacy staff (mirrors lab staff handling).
+      if (!userExists) {
+        t.set(userRef, {
+          role: "staff",
+          hasCenter: true,
+          createdAt: now,
+        });
+      } else {
+        t.update(userRef, {
+          hasCenter: true,
+          roles: admin.firestore.FieldValue.arrayUnion("staff"),
+        });
+      }
+
+      return { concurrent: false };
+    });
+
+    if (txResult.concurrent) {
+      const r = txResult.success
+        ? { activated: true, isPharmacyMember: true, pharmacyId, pharmacyRole }
+        : { activated: false };
+      console.log(`[activateStaffInvite] PATH3 concurrent result:`, JSON.stringify(r));
+      return r;
+    }
+
+    console.log(`[activateStaffInvite] PATH3 success: pharmacyId=${pharmacyId} pharmacyRole=${pharmacyRole}`);
+    return { activated: true, isPharmacyMember: true, pharmacyId, pharmacyRole };
+  }
+
   // ─── NO INVITE FOUND — idempotency check ─────────────────────────────────
 
   console.log(`[activateStaffInvite] No pending invite found for ${normalizedPhone} — checking existing active memberships for uid=${uid}`);
@@ -310,6 +424,27 @@ exports.activateStaffInvite = onCall({ region: "us-central1" }, async (request) 
       labRole: doc.data().role || "staff",
     };
     console.log(`[activateStaffInvite] Idempotency: existing lab member`, JSON.stringify(result));
+    return result;
+  }
+
+  // Check if this uid already has an active pharmacy membership.
+  const existingPharmacyQuery = await db
+    .collectionGroup("pharmacy_members")
+    .where("uid", "==", uid)
+    .where("isActive", "==", true)
+    .limit(1)
+    .get();
+
+  if (!existingPharmacyQuery.empty) {
+    const doc = existingPharmacyQuery.docs[0];
+    const pharmacyId = doc.ref.parent.parent.id;
+    const result = {
+      activated: true,
+      isPharmacyMember: true,
+      pharmacyId,
+      pharmacyRole: doc.data().role || "staff",
+    };
+    console.log(`[activateStaffInvite] Idempotency: existing pharmacy member`, JSON.stringify(result));
     return result;
   }
 
