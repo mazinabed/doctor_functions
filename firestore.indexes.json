@@ -489,6 +489,15 @@
       ]
     },
     {
+      "collectionGroup": "public_pharmacy_providers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status",       "order": "ASCENDING" },
+        { "fieldPath": "province_key", "order": "ASCENDING" },
+        { "fieldPath": "city_en",      "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "public_diagnostic_providers",
       "queryScope": "COLLECTION",
       "fields": [
