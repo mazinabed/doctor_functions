@@ -1318,7 +1318,10 @@ service cloud.firestore {
             || isCenterAdminForCenter(resource.data.centerId)
             || isAdmin());
 
+      // pharmacy_providers are explicitly excluded even if they also have a doctors/{uid}
+      // doc (possible for dev/test accounts). Pharmacy uses center_partnership_requests.
       allow create: if isDoctor()
+        && !exists(/databases/$(database)/documents/pharmacy_providers/$(request.auth.uid))
         && request.resource.data.doctorId == request.auth.uid
         && request.resource.data.status == 'pending';
 
@@ -1348,7 +1351,8 @@ service cloud.firestore {
             || isAdmin());
 
       allow create: if isSignedIn()
-        && exists(/databases/$(database)/documents/diagnostic_providers/$(request.auth.uid))
+        && (exists(/databases/$(database)/documents/diagnostic_providers/$(request.auth.uid))
+            || exists(/databases/$(database)/documents/pharmacy_providers/$(request.auth.uid)))
         && request.resource.data.providerId == request.auth.uid
         && request.resource.data.status == 'pending';
 
@@ -1700,6 +1704,22 @@ service cloud.firestore {
              'updatedAt'
            ]);
 
+      // Pharmacy scheduled patient arrives (scheduled → received).
+      // Pharmacy skips the lab checkedIn step — arrival writes received directly
+      // so the pharmacist tab can begin preparation without a separate check-in.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
+        && resource.data.get('partnerStatus', '') == 'scheduled'
+        && request.resource.data.get('partnerStatus', '') == 'received'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'partnerReceivedAt', 'partnerReceivedByUid',
+             'paymentStatus', 'paymentStatusUpdatedAt', 'paymentStatusUpdatedByUid',
+             'amountPaid', 'paymentMethod', 'receiptRef',
+             'updatedAt'
+           ]);
+
       // Scheduled appointment: patient did not arrive (scheduled → noShow).
       allow update: if isSignedIn()
         && resource.data.get('requestDestination', '') == 'partner'
@@ -1770,6 +1790,55 @@ service cloud.firestore {
              'status', 'resultNote', 'resultItems',
              'completedAt', 'completedDateKey',
              'completedByUid', 'completedByName', 'updatedAt'
+           ]);
+
+      // Pharmacy: received or checkedIn → preparing + in_progress.
+      // Pharmacy drives preparation directly from received (no separate checkedIn step).
+      // checkedIn is kept as a valid from-state for backward compatibility with
+      // legacy walk-in docs created before the pharmacy lifecycle was separated.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
+        && resource.data.get('partnerStatus', '') in ['received', 'checkedIn']
+        && resource.data.get('status', '') == 'pending'
+        && request.resource.data.get('partnerStatus', '') == 'preparing'
+        && request.resource.data.get('status', '') == 'in_progress'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'status', 'claimedAt',
+             'partnerPreparingAt', 'partnerPreparingByUid', 'updatedAt'
+           ]);
+
+      // Pharmacy: preparing + in_progress → ready + completed.
+      // Reception handles the final dispense step separately (markDispensed).
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
+        && resource.data.get('partnerStatus', '') == 'preparing'
+        && resource.data.get('status', '') == 'in_progress'
+        && request.resource.data.get('partnerStatus', '') == 'ready'
+        && request.resource.data.get('status', '') == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'status', 'completedAt',
+             'partnerReadyAt', 'partnerReadyByUid', 'updatedAt'
+           ]);
+
+      // Pharmacy: ready + completed → dispensed (patient pickup).
+      // Payment may be captured atomically (unpaid orders). hasOnly is a ceiling —
+      // payment fields are optional for already-paid orders.
+      allow update: if isSignedIn()
+        && resource.data.get('requestDestination', '') == 'partner'
+        && (isLabMember(resource.data.get('partnerProviderId', ''))
+            || request.auth.uid == resource.data.get('partnerProviderId', ''))
+        && resource.data.get('partnerStatus', '') == 'ready'
+        && resource.data.get('status', '') == 'completed'
+        && request.resource.data.get('partnerStatus', '') == 'dispensed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'partnerStatus', 'dispensedAt', 'dispensedByUid',
+             'paymentStatus', 'paymentStatusUpdatedAt', 'paymentStatusUpdatedByUid',
+             'amountPaid', 'paymentMethod', 'receiptRef',
+             'updatedAt'
            ]);
 
       // Diagnostic provider captures payment on an existing partner request
@@ -1856,6 +1925,14 @@ service cloud.firestore {
           && labProviderForRequest(requestId) != ''
           && (isLabMember(labProviderForRequest(requestId))
               || request.auth.uid == labProviderForRequest(requestId));
+
+        // READ path 5 — Pharmacy staff reads prescription attachments sent to their pharmacy.
+        // Mirrors READ path 4 but uses isPharmacyMember (pharmacy_providers/.../pharmacy_members).
+        // labProviderForRequest() is reused — reads partnerProviderId regardless of provider type.
+        // Pharmacy owner (UID == partnerProviderId) is already covered by READ path 4 above.
+        allow read: if isSignedIn()
+          && labProviderForRequest(requestId) != ''
+          && isPharmacyMember(labProviderForRequest(requestId));
 
         allow create: if isSignedIn()
           && isCenterMember(request.resource.data.centerId)
