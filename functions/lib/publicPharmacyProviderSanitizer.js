@@ -142,6 +142,12 @@ function buildPublicPharmacyDoc(pharmacyId, data, existingPublicData) {
       data.clinicAddress || data.facilityAddress,
     ]),
 
+    // ── Pharmacy services ─────────────────────────────────────────────────────
+    pharmacyServices:
+      data.pharmacyServices && typeof data.pharmacyServices === "object"
+        ? { ...data.pharmacyServices }
+        : null,
+
     // ── Timestamps ────────────────────────────────────────────────────────────
     syncedAt:  now,
     createdAt: existingPublicData?.createdAt || now,
