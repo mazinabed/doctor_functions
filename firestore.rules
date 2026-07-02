@@ -1442,6 +1442,16 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ── Public pharmacy provider profiles ─────────────────────────────────────
+    // Safe patient-facing projection of pharmacy_providers/{uid}.
+    // Written exclusively by the syncPublicPharmacyProvider Cloud Function
+    // (or admin backfill). Only eligible pharmacies (active + verified) appear here.
+    // Read access is intentionally public — same pattern as public_diagnostic_providers.
+    match /public_pharmacy_providers/{providerId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     match /facebook_doctors/{id} {
       allow read: if isAdmin();
     }

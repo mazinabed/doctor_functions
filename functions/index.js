@@ -1843,6 +1843,7 @@ const db = admin.firestore();
 
 const { isPublicEligible, buildPublicDoc } = require("./lib/publicDoctorSanitizer");
 const { isProviderPublicEligible, buildPublicProviderDoc } = require("./lib/publicDiagnosticProviderSanitizer");
+const { isPharmacyPublicEligible, buildPublicPharmacyDoc } = require("./lib/publicPharmacyProviderSanitizer");
 
 exports.attachDoctorOwnership = onDocumentUpdated(
   "doctors/{doctorId}",
@@ -1995,6 +1996,53 @@ exports.syncPublicDiagnosticProvider = onDocumentWritten(
     );
     await publicRef.set(publicDoc);
     console.log(`public_diagnostic_providers: synced ${providerId} [${data.serviceGroup}] centerId=${publicDoc.centerId}`);
+  }
+);
+
+// ─── Sync safe public pharmacy provider profile ───────────────────────────────
+// Fires on every pharmacy_providers/{pharmacyId} write (create, update, delete).
+// Eligible pharmacies → write safe fields to public_pharmacy_providers/{pharmacyId}.
+// Ineligible or deleted → remove public_pharmacy_providers/{pharmacyId}.
+//
+// Eligibility: status === 'active' && isVerified === true.
+// No centerId resolution needed — pharmacy does not use the schedules collection.
+exports.syncPublicPharmacyProvider = onDocumentWritten(
+  "pharmacy_providers/{pharmacyId}",
+  async (event) => {
+    const pharmacyId = event.params.pharmacyId;
+    const after = event.data.after;
+    const publicRef = db.collection("public_pharmacy_providers").doc(pharmacyId);
+
+    if (!after.exists) {
+      await publicRef.delete();
+      console.log(`public_pharmacy_providers: removed ${pharmacyId} (source doc deleted)`);
+      return;
+    }
+
+    const data = after.data();
+
+    if (!isPharmacyPublicEligible(data)) {
+      const existing = await publicRef.get();
+      if (existing.exists) {
+        await publicRef.delete();
+        console.log(
+          `public_pharmacy_providers: removed ${pharmacyId} — ineligible ` +
+          `(status=${data.status}, isVerified=${data.isVerified})`
+        );
+      } else {
+        console.log(`public_pharmacy_providers: skipped ${pharmacyId} — ineligible`);
+      }
+      return;
+    }
+
+    const existing = await publicRef.get();
+    const publicDoc = buildPublicPharmacyDoc(
+      pharmacyId,
+      data,
+      existing.exists ? existing.data() : null
+    );
+    await publicRef.set(publicDoc);
+    console.log(`public_pharmacy_providers: synced ${pharmacyId}`);
   }
 );
 
