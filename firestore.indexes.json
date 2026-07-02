@@ -533,8 +533,17 @@
       "collectionGroup": "patient_referral_requests",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "patientId",  "order": "ASCENDING" },
-        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+        { "fieldPath": "patientId",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt",    "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "patient_referral_requests",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "patientId",    "order": "ASCENDING" },
+        { "fieldPath": "serviceGroup", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",    "order": "DESCENDING" }
       ]
     },
     {
