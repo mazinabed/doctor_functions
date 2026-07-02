@@ -87,6 +87,46 @@ service firebase.storage {
       allow delete: if request.auth != null && request.auth.uid == uid;
     }
 
+    // ── Pharmacy provider profile photos ─────────────────────────────────
+    // Path: pharmacy_providers/{uid}/{fileName}
+    //
+    // Used to store the pharmacy logo/photo uploaded via the pharmacy
+    // profile edit page (pharmacy_edit_photo_page.dart).
+    //
+    // Read:   public — photos appear on pharmacy listings.
+    // Create / Update: own uid only; ≤ 5 MB; JPEG or PNG only.
+    //   Update permitted so the owner can replace the photo in place.
+    // Delete: own uid only.
+    match /pharmacy_providers/{uid}/{fileName} {
+      allow read: if true;
+      allow create, update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/jpeg|image/png');
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ── Pharmacy provider identity documents ──────────────────────────────
+    // Path: pharmacy_docs/{uid}/{fileName}
+    //
+    // Identity and licensing documents uploaded via the pharmacy documents
+    // edit page (pharmacy_edit_documents_page.dart).
+    //
+    // Read:   own uid only — sensitive identity documents.
+    //         Admin review happens via the download URL stored in Firestore.
+    // Create: own uid only; ≤ 5 MB; JPEG, PNG, or PDF only.
+    // Delete: own uid only (allows re-upload corrections).
+    // Update: never — files are replaced by re-upload, not mutated in place.
+    match /pharmacy_docs/{uid}/{fileName} {
+      allow read:   if request.auth != null && request.auth.uid == uid;
+      allow create: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/jpeg|image/png|application/pdf');
+      allow delete: if request.auth != null && request.auth.uid == uid;
+      allow update: if false;
+    }
+
     // ── Patient profile photos ───────────────────────────────────────────
     // Path: profile_images/{uid}.jpg
     //
