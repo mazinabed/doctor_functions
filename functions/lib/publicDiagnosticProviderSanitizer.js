@@ -70,9 +70,15 @@ function buildPublicProviderDoc(providerId, data, existingPublicData, resolvedCe
   const serviceGroup = (data.serviceGroup || data.providerKind || "laboratory").toString();
   const providerKind = serviceGroup === "imaging" ? "imaging" : "laboratory";
 
-  // specialty_key: matches serviceGroup so chip-bar filters in the patient app
-  // can filter by matching specialty doc serviceGroup → provider providerKind.
-  const specialty_key = serviceGroup;
+  // specialty_key: the provider's specific specialty doc ID (e.g. 'dental_lab',
+  // 'ultrasound', 'mri'). Used by the patient app chip-bar to filter by exact
+  // sub-specialty. Falls back to serviceGroup for providers that were onboarded
+  // without a specific specialty key so the coarse lab/imaging distinction is
+  // preserved until the backfill script is re-run.
+  const specialty_key =
+    (typeof data.specialty_key === 'string' && data.specialty_key.trim())
+      ? data.specialty_key.trim()
+      : serviceGroup;
 
   // serviceCount: explicit field wins; fall back to counting service arrays if
   // present; default 0 until service catalog is built.
