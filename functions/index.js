@@ -2181,3 +2181,7 @@ exports.guardDisableDay     = scheduleGuard.guardDisableDay;
 exports.guardClearDay       = scheduleGuard.guardClearDay;
 exports.guardResetWeek      = scheduleGuard.guardResetWeek;
 exports.guardPublishDrafts  = scheduleGuard.guardPublishDrafts;
+
+// ─── TrustyDr Commerce Bridge (Milestone 2A — read-only, additive) ─────────
+const { resolveAccessContext } = require("./commerce/resolveAccessContext");
+exports.resolveAccessContext = resolveAccessContext;
