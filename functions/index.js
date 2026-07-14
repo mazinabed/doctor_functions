@@ -2185,3 +2185,16 @@ exports.guardPublishDrafts  = scheduleGuard.guardPublishDrafts;
 // ─── TrustyDr Commerce Bridge (Milestone 2A — read-only, additive) ─────────
 const { resolveAccessContext } = require("./commerce/resolveAccessContext");
 exports.resolveAccessContext = resolveAccessContext;
+
+// ─── TrustyDr Commerce Bridge — Phase 1C (Patient Marketplace, browse-only) ─
+// The one Patient-App-facing bridge function — runs Healthcare -> Commerce
+// (every other bridge above runs the opposite direction). See
+// getMarketplaceCatalog.js's own header for the full contract.
+const { getMarketplaceCatalog } = require("./commerce/getMarketplaceCatalog");
+exports.getMarketplaceCatalog = getMarketplaceCatalog;
+
+// ─── TrustyDr Commerce Bridge — Phase 1C (Patient Marketplace, browse-only) ─
+// Store Discovery aggregate — see getActiveMarketplaceStores.js's own header
+// for the full contract.
+const { getActiveMarketplaceStores } = require("./commerce/getActiveMarketplaceStores");
+exports.getActiveMarketplaceStores = getActiveMarketplaceStores;
