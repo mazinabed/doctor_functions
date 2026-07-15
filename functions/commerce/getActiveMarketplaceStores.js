@@ -1,8 +1,17 @@
 // TrustyDr Commerce Bridge — Phase 1C (Patient Marketplace, browse-only).
 //
 // Store Discovery aggregate. Patient-App-facing counterpart to
-// getMarketplaceCatalog.js, same direction (Healthcare -> Commerce), same
-// onCall + request.auth pattern.
+// getMarketplaceCatalog.js, same direction (Healthcare -> Commerce).
+//
+// PUBLIC BROWSE (2026-07-15): deliberately NOT auth-gated — see the matching
+// note in getMarketplaceCatalog.js for the full rationale (guests must be
+// able to browse the full public Marketplace, matching TrustyDr's existing
+// healthcare discovery model; this function never used request.auth.uid for
+// scoping, only as a pure access gate, so removing it changes nothing about
+// what data is returned). Billing/eligibility filtering below (province/
+// city/status/verification/commerce-operational) is unrelated to caller
+// identity — it already runs the same way for every request regardless of
+// who's asking.
 //
 // Reuses the EXACT existing pharmacy discovery query shape (province_key +
 // city_en on public_pharmacy_providers — see
@@ -44,10 +53,6 @@ function isCommerceBillingOperational(status) {
 }
 
 exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "You must be logged in.");
-  }
-
   const { provinceKey, cityEn, search, limit, productsLimit } = request.data || {};
   if (!provinceKey || typeof provinceKey !== "string") {
     throw new HttpsError("invalid-argument", "provinceKey is required.");
@@ -210,6 +215,9 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
         description_en: p.description_en ?? null,
         description_ar: p.description_ar ?? null,
         brandName: p.brandName ?? null,
+        categoryEngineIds: Array.isArray(p.categoryEngineIds) ? p.categoryEngineIds : [],
+        categoryKeys: Array.isArray(p.categoryKeys) ? p.categoryKeys : [],
+        categories: Array.isArray(p.categories) ? p.categories : [],
         categoryEngineId: p.categoryEngineId ?? null,
         categoryName_en: p.categoryName_en ?? null,
         categoryName_ar: p.categoryName_ar ?? null,
@@ -224,13 +232,23 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
       };
     });
 
+  // Shared Marketplace Category Engine (2026-07-14) — categoryKey/
+  // parentCategoryKey is the stable identity the Patient App now
+  // filters/navigates on; engineId/odooCategoryId survive only for
+  // reference. This used to re-map to the legacy engineId-shaped fields
+  // only, silently dropping the new ones — fixed here.
   const categories = (Array.isArray(commerceResponse.categories) ? commerceResponse.categories : [])
     .map((c) => ({
-      engineId: c.engineId,
+      categoryKey: c.categoryKey,
+      parentCategoryKey: c.parentCategoryKey ?? null,
+      level: c.level ?? 0,
       name_en: c.name_en,
       name_ar: c.name_ar,
-      parentEngineId: c.parentEngineId ?? null,
-      sequence: c.sequence,
+      name_ku: c.name_ku ?? "",
+      iconKey: c.iconKey ?? null,
+      sortOrder: c.sortOrder ?? 0,
+      featured: Boolean(c.featured),
+      odooCategoryId: c.odooCategoryId ?? null,
     }));
 
   const hasMoreProducts = commerceResponse.hasMoreProducts === true;

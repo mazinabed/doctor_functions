@@ -2186,6 +2186,18 @@ exports.guardPublishDrafts  = scheduleGuard.guardPublishDrafts;
 const { resolveAccessContext } = require("./commerce/resolveAccessContext");
 exports.resolveAccessContext = resolveAccessContext;
 
+// ─── TrustyDr Commerce Bridge — staff Store-permission resolution ──────────
+// Read-only, additive, same bridge pattern as resolveAccessContext above —
+// see resolveStaffStoreAccess.js's own header for the full contract.
+const { resolveStaffStoreAccess } = require("./commerce/resolveStaffStoreAccess");
+exports.resolveStaffStoreAccess = resolveStaffStoreAccess;
+
+// ─── TrustyDr Commerce Bridge — Phase 1B (Commerce Billing) ────────────────
+// The one write-capable bridge function — see startCommerceTrial.js's own
+// header for the full owner-only, idempotent contract.
+const { startCommerceTrial } = require("./commerce/startCommerceTrial");
+exports.startCommerceTrial = startCommerceTrial;
+
 // ─── TrustyDr Commerce Bridge — Phase 1C (Patient Marketplace, browse-only) ─
 // The one Patient-App-facing bridge function — runs Healthcare -> Commerce
 // (every other bridge above runs the opposite direction). See
@@ -2198,3 +2210,23 @@ exports.getMarketplaceCatalog = getMarketplaceCatalog;
 // for the full contract.
 const { getActiveMarketplaceStores } = require("./commerce/getActiveMarketplaceStores");
 exports.getActiveMarketplaceStores = getActiveMarketplaceStores;
+
+// ─── TrustyDr Commerce Bridge — Shared Marketplace Category Engine ─────────
+// Admin-only CRUD (mydoctor_admin -> Healthcare -> Commerce) — see
+// adminMarketplaceCategories.js's own header for the full contract.
+const {
+  adminListMarketplaceCategories,
+  adminCreateMarketplaceCategory,
+  adminUpdateMarketplaceCategory,
+  adminMoveMarketplaceCategory,
+  adminDeleteMarketplaceCategory,
+  adminSyncMarketplaceCategoriesToOdoo,
+  adminBulkImportMarketplaceCategories,
+} = require("./commerce/adminMarketplaceCategories");
+exports.adminListMarketplaceCategories = adminListMarketplaceCategories;
+exports.adminCreateMarketplaceCategory = adminCreateMarketplaceCategory;
+exports.adminUpdateMarketplaceCategory = adminUpdateMarketplaceCategory;
+exports.adminMoveMarketplaceCategory = adminMoveMarketplaceCategory;
+exports.adminDeleteMarketplaceCategory = adminDeleteMarketplaceCategory;
+exports.adminSyncMarketplaceCategoriesToOdoo = adminSyncMarketplaceCategoriesToOdoo;
+exports.adminBulkImportMarketplaceCategories = adminBulkImportMarketplaceCategories;

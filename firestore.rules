@@ -970,6 +970,12 @@ service cloud.firestore {
         && request.resource.data.ownerId == request.auth.uid;
 
       // accountLifecycle is controlled exclusively by Cloud Functions (admin SDK).
+      // Phase 1B: commerce* fields added to the SAME protected list as the
+      // existing Healthcare billing fields — same admin/Cloud-Function-only
+      // tier, never a separate rule. commerceStatusSyncedAt/commerceLastReminderStage
+      // are written only by the scheduled expireCenters job (admin SDK);
+      // commerceTrialStart/commerceTrialEnds are written only by the
+      // startCommerceTrial bridge function (admin SDK, owner-verified there).
       allow update: if !touchesLifecycle()
         && (isAdmin()
             || (isSignedIn()
@@ -979,7 +985,12 @@ service cloud.firestore {
                      'trialStart', 'trialEnds',
                      'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
                      'currentPlan', 'billingCycle', 'paymentProvider',
-                     'subscriptionVersion', 'lastPaymentAt', 'ownerId'
+                     'subscriptionVersion', 'lastPaymentAt', 'ownerId',
+                     'commerceSubscriptionStatus', 'commerceTrialStart', 'commerceTrialEnds',
+                     'commerceTrialCompleted', 'commerceSubscriptionStart', 'commerceSubscriptionEnd',
+                     'commerceGracePeriodEnds', 'commerceNextBillingDate', 'commerceBillingCycle',
+                     'commercePlanId', 'commercePlanVersion', 'commerceLastPaymentAt',
+                     'commerceSubscriptionStatusSyncedAt', 'commerceLastReminderStage'
                    ]))
             // Scoped center admin may update non-billing fields (e.g. doctorCount).
             || (isCenterAdminForCenter(centerId)
@@ -988,7 +999,12 @@ service cloud.firestore {
                      'trialStart', 'trialEnds',
                      'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
                      'currentPlan', 'billingCycle', 'paymentProvider',
-                     'subscriptionVersion', 'lastPaymentAt', 'ownerId'
+                     'subscriptionVersion', 'lastPaymentAt', 'ownerId',
+                     'commerceSubscriptionStatus', 'commerceTrialStart', 'commerceTrialEnds',
+                     'commerceTrialCompleted', 'commerceSubscriptionStart', 'commerceSubscriptionEnd',
+                     'commerceGracePeriodEnds', 'commerceNextBillingDate', 'commerceBillingCycle',
+                     'commercePlanId', 'commercePlanVersion', 'commerceLastPaymentAt',
+                     'commerceSubscriptionStatusSyncedAt', 'commerceLastReminderStage'
                    ])));
 
 
@@ -1256,12 +1272,17 @@ service cloud.firestore {
       // All other status transitions remain admin/server-only.
       allow update: if isAdmin()
         // Step 2: submit for review after declaring intent
+        // Phase 1B (Commerce Billing): 'referenceNumber' added to the
+        // allowlist — a purely informational, optional field the submitter
+        // may include (their own ZainCash transaction reference); it
+        // changes what THIS already-authorized transition may touch, never
+        // who may perform it or which status values are valid.
         || (isSignedIn()
             && resource.data.uid == request.auth.uid
             && resource.data.status == 'declared'
             && request.resource.data.status == 'under_review'
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['status', 'updatedAt']))
+                 .hasOnly(['status', 'updatedAt', 'referenceNumber']))
         // Renewal: center owner may re-initiate payment from a completed cycle.
         // The open payment doc (open_center_{centerId}) is reused across renewals.
         // .set(merge:true) on an existing doc evaluates as update in rules.
@@ -1280,12 +1301,14 @@ service cloud.firestore {
         // Confirm transfer: doctor marks awaiting_transfer payment as sent.
         // Only the original submitter may do this. hasOnly prevents writing
         // activation fields; actual activation still requires admin approval.
+        // Phase 1B (Commerce Billing): 'referenceNumber' added — see the
+        // identical comment on the declared->under_review branch above.
         || (isSignedIn()
             && resource.data.uid == request.auth.uid
             && resource.data.status == 'awaiting_transfer'
             && request.resource.data.status == 'under_review'
             && request.resource.data.diff(resource.data).affectedKeys()
-                 .hasOnly(['status', 'submittedAt', 'updatedAt']))
+                 .hasOnly(['status', 'submittedAt', 'updatedAt', 'referenceNumber']))
         // Resubmit after rejection: original submitter or current center owner may
         // restart a rejected open payment doc. centerId is immutable; target may be
         // awaiting_transfer (new canonical) or declared (backward compat for legacy

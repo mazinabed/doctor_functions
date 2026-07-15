@@ -110,6 +110,52 @@ describe('medical_centers — updates (critical: billing fields)', () => {
       })
     );
   });
+
+  // Phase 1B — Commerce billing fields must sit in the SAME protected tier
+  // as the existing Healthcare billing fields above (5.5/5.5b/5.6).
+  test('5.10 center owner cannot update commerceSubscriptionStatus (Commerce billing field)', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'medical_centers', 'center1'), { commerceSubscriptionStatus: 'active' })
+    );
+  });
+
+  test('5.10b center owner cannot update commercePlanId (Commerce billing field)', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'medical_centers', 'center1'), { commercePlanId: 'professional' })
+    );
+  });
+
+  test('5.10c center owner cannot update commerceTrialCompleted (Commerce billing field)', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'medical_centers', 'center1'), { commerceTrialCompleted: true })
+    );
+  });
+
+  test('5.10d center owner cannot update commercePlanVersion (Commerce billing field)', async () => {
+    // Phase 1B (Commerce Billing) approval — commercePlanVersion was the
+    // one sibling billing field missing from this blocklist; added
+    // alongside commercePlanId to close the gap before the admin approval
+    // flow became the first real writer of Commerce billing fields.
+    const db = testEnv.authenticatedContext('uid_doctor1').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'medical_centers', 'center1'), { commercePlanVersion: 1 })
+    );
+  });
+
+  test('5.11 admin can update any Commerce billing field', async () => {
+    const db = testEnv.authenticatedContext('uid_admin').firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, 'medical_centers', 'center1'), {
+        commerceSubscriptionStatus: 'active',
+        commercePlanId:             'starter',
+        commercePlanVersion:        1,
+        commerceTrialCompleted:     true,
+      })
+    );
+  });
 });
 
 describe('medical_centers — members subcollection', () => {

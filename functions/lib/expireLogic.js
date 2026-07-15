@@ -74,4 +74,105 @@ function deriveTargetStatus(data, now) {
   return { subscriptionStatus: 'expired', centerStatus: 'locked' };
 }
 
-module.exports = { deriveTargetStatus, BATCH_LIMIT };
+/**
+ * Phase 1B (Commerce Billing) — Commerce's own, fully independent derivation,
+ * over commerce*-namespaced fields on the SAME medical_centers document.
+ *
+ * CONSTRAINTS (hard — must never be violated, mirroring deriveTargetStatus's
+ * own contract exactly, plus one Commerce-specific rule):
+ *   - Returns only 'grace' or 'expired' — never 'active' or 'trial'.
+ *   - Returns null (no write) when any operational date window is still valid.
+ *   - Returns null when no Commerce date fields are present — this is what
+ *     naturally leaves migration-grandfathered pharmacies alone (they have
+ *     commerceSubscriptionStatus:'active' but no trial/subscription/grace
+ *     dates at all until a real billing cycle is later assigned).
+ *   - NEVER returns centerStatus/subscriptionStatus keys — Commerce expiry
+ *     must never lock the center or affect the Healthcare subscription.
+ *   - Idempotent: re-running on an already-correct center returns null.
+ */
+function deriveCommerceTargetStatus(data, now) {
+  const trialEnds       = toDate(data.commerceTrialEnds);
+  const subscriptionEnd = toDate(data.commerceSubscriptionEnd);
+  const gracePeriodEnds = toDate(data.commerceGracePeriodEnds);
+
+  if (!trialEnds && !subscriptionEnd && !gracePeriodEnds) {
+    return null;
+  }
+
+  const inTrial        = trialEnds       !== null && now < trialEnds;
+  const inSubscription = subscriptionEnd !== null && now < subscriptionEnd;
+  const inGrace         = gracePeriodEnds !== null && now < gracePeriodEnds;
+
+  if (inTrial || inSubscription) {
+    return null;
+  }
+
+  if (inGrace) {
+    if (data.commerceSubscriptionStatus === 'grace') return null;
+    return { commerceSubscriptionStatus: 'grace' };
+  }
+
+  if (data.commerceSubscriptionStatus === 'expired') return null;
+  return { commerceSubscriptionStatus: 'expired' };
+}
+
+/**
+ * Phase 1B (Commerce Billing) — reminder-stage derivation.
+ *
+ * 7 stages, in chronological order: 14d/7d/3d/1d before the current anchor
+ * date (commerceSubscriptionEnd if set, else commerceTrialEnds), then
+ * 'expiry' (the anchor date itself), 'grace' (one day into the 7-day grace
+ * window — a distinct, later notice from 'expiry', not a duplicate of it),
+ * then 'final' (the moment commerceGracePeriodEnds itself passes — genuine
+ * suspension). These offsets are proposed defaults, not extracted from any
+ * pre-existing constant — no billing-reminder schedule existed before this.
+ *
+ * Returns the single MOST-ADVANCED stage whose trigger date has been
+ * reached and that does not match `data.commerceLastReminderStage` — never
+ * more than one stage per call, so a pharmacy that already passed several
+ * thresholds before this logic first ran does not get a backlog of
+ * reminders fired all at once, just the most current one. Returns null
+ * when no Commerce billing cycle exists, or the currently-reached stage
+ * was already sent.
+ */
+const REMINDER_STAGE_OFFSET_DAYS = { '14d': -14, '7d': -7, '3d': -3, '1d': -1, expiry: 0, grace: 1 };
+const REMINDER_STAGES = ['14d', '7d', '3d', '1d', 'expiry', 'grace', 'final'];
+
+function addDays(date, days) {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function deriveCommerceReminderStage(data, now) {
+  const trialEnds       = toDate(data.commerceTrialEnds);
+  const subscriptionEnd = toDate(data.commerceSubscriptionEnd);
+  const gracePeriodEnds = toDate(data.commerceGracePeriodEnds);
+  const anchor = subscriptionEnd || trialEnds;
+
+  if (!anchor) return null; // no Commerce billing cycle — nothing to remind
+
+  let latestReachedStage = null;
+  for (const stage of REMINDER_STAGES) {
+    let triggerDate;
+    if (stage === 'final') {
+      if (!gracePeriodEnds) continue;
+      triggerDate = gracePeriodEnds;
+    } else {
+      triggerDate = addDays(anchor, REMINDER_STAGE_OFFSET_DAYS[stage]);
+    }
+    if (now >= triggerDate) {
+      latestReachedStage = stage;
+    }
+  }
+
+  if (!latestReachedStage) return null;
+  if (latestReachedStage === data.commerceLastReminderStage) return null;
+  return latestReachedStage;
+}
+
+module.exports = {
+  deriveTargetStatus,
+  deriveCommerceTargetStatus,
+  deriveCommerceReminderStage,
+  REMINDER_STAGES,
+  BATCH_LIMIT,
+};

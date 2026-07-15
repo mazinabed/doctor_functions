@@ -183,6 +183,11 @@ async function sendFcmPush(db, recipientUid, notifContent, dataPayload) {
 
 // ─── Scheduled function ───────────────────────────────────────────────────────
 
+// Exported so Phase 1B's Commerce billing reminders (expireCenters.js) can
+// reuse the SAME FCM fan-out mechanism — same token lookup, same per-language
+// grouping, same invalid-token cleanup — rather than a second copy.
+exports.sendFcmPush = sendFcmPush;
+
 exports.sendDailyReminders = onSchedule(
   { schedule: '0 6 * * *', timeZone: 'UTC' },
   async (_event) => {

@@ -7,29 +7,34 @@
 // App can ever see marketplace catalog data — patients never call Commerce,
 // and never call Odoo, directly (ADR-C002, COMMERCE_DOMAIN_BOUNDARIES.md §5).
 //
-// Auth pattern matches this codebase's other Patient-App-facing callables
-// (see lifecycle/requestAccountDeletion.js) — onCall + request.auth, NOT the
-// onRequest + manual-idToken-verification shape the Commerce-facing bridge
-// files use, since here the caller IS a Firebase-Auth'd client SDK, not a
-// server-to-server call.
+// PUBLIC BROWSE (2026-07-15): deliberately NOT auth-gated. Guests must be
+// able to browse the full public Marketplace without logging in, matching
+// TrustyDr's existing healthcare discovery model (doctor/center browse is
+// also unauthenticated; auth is required only for protected actions —
+// booking, cart, checkout, prescriptions, order history). This function
+// takes no action on request.auth.uid and never did — the auth check
+// removed here was a pure access gate, not used for scoping/personalization,
+// so removing it changes nothing about what data is returned to whom.
+// Still onCall (not onRequest) — the caller is a Firebase client SDK either
+// way, authenticated or not; onCall handles both without any code change on
+// this function's part, so the transport shape didn't need to change, only
+// the gate.
 //
-// This function itself does no Firestore reads of its own — it's a thin,
-// authenticated relay to Commerce's getMarketplaceCatalogForHealthcare
+// This function itself does no Firestore reads of its own — it's a thin
+// relay to Commerce's getMarketplaceCatalogForHealthcare
 // (trustydr-commerce/functions/src/marketplaceBridge.ts), which already
 // returns only already-published, patient-visible fields (Minimum Data
-// Exchange Principle, matching every other bridge function in this repo).
+// Exchange Principle, matching every other bridge function in this repo) —
+// that field-level guarantee is what actually keeps this safe to expose
+// publicly, not the (now-removed) login check.
 
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { HttpsError, onCall } = require("firebase-functions/v2/https");
 const fetch = require("node-fetch");
 
 const COMMERCE_MARKETPLACE_BRIDGE_URL =
   "https://us-central1-trustydr-commerce.cloudfunctions.net/getMarketplaceCatalogForHealthcare";
 
 exports.getMarketplaceCatalog = onCall({ region: "us-central1" }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "You must be logged in.");
-  }
-
   const { orgId } = request.data || {};
   if (!orgId || typeof orgId !== "string") {
     throw new HttpsError("invalid-argument", "orgId is required.");
