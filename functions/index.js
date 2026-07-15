@@ -2230,3 +2230,16 @@ exports.adminMoveMarketplaceCategory = adminMoveMarketplaceCategory;
 exports.adminDeleteMarketplaceCategory = adminDeleteMarketplaceCategory;
 exports.adminSyncMarketplaceCategoriesToOdoo = adminSyncMarketplaceCategoriesToOdoo;
 exports.adminBulkImportMarketplaceCategories = adminBulkImportMarketplaceCategories;
+
+// ─── TrustyDr Commerce Bridge — Milestone 6 (Cart, Checkout, Order Creation) ─
+// Patient-App-facing, Healthcare -> Commerce, write-capable and
+// patient-identity-bound — see marketplaceCheckout.js's own header for the
+// full idempotency/cancellation-boundary contract.
+const {
+  placeMarketplaceOrder,
+  cancelMarketplaceOrder,
+  getMarketplaceOrderStatus,
+} = require("./commerce/marketplaceCheckout");
+exports.placeMarketplaceOrder = placeMarketplaceOrder;
+exports.cancelMarketplaceOrder = cancelMarketplaceOrder;
+exports.getMarketplaceOrderStatus = getMarketplaceOrderStatus;

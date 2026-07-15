@@ -2352,6 +2352,27 @@ service cloud.firestore {
         && request.auth.uid == doctorId;
     }
 
+    // ───────────────────────────────────────────────────────────────────────
+    // marketplace_orders/{orderId}
+    //
+    // Milestone 6 (Cart, Checkout, Order Creation). Odoo's sale.order
+    // remains the actual system of record for the order; this collection is
+    // the patient-facing order-history projection only, written exclusively
+    // by placeMarketplaceOrder/cancelMarketplaceOrder (Admin SDK, doctor_functions/
+    // functions/commerce/marketplaceCheckout.js) — never directly by a
+    // client, including status transitions and cancellation. A patient may
+    // only ever READ their own order; no client write path exists at all
+    // (money/state-owned-by-server fields, matching this ecosystem's
+    // existing convention of admin/Cloud-Function-only writes for anything
+    // Odoo/Commerce is the pricing authority for).
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /marketplace_orders/{orderId} {
+      allow read: if isSignedIn()
+        && (resource.data.patientId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // Intentionally unmatched collections (implicit deny):
