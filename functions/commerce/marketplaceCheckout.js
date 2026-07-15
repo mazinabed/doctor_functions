@@ -247,12 +247,18 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
 });
 
 // Cancellation boundary (business rule owned here, not by Odoo or
-// Commerce): only while Odoo's own state is still 'sale' (confirmed, not
-// yet done/invoiced) AND no linked stock.picking has progressed past
-// 'confirmed' — i.e. fulfillment hasn't actually started. Re-checked LIVE
-// against Odoo on every call, never against the locally-cached
-// marketplace_orders projection.
-const CANCELLABLE_PICKING_STATES = new Set([null, "draft", "waiting", "confirmed"]);
+// Commerce): a patient may cancel through Odoo's 'assigned' picking state
+// (stock reserved for the delivery, but nothing physically moved yet) —
+// only 'done' (physical fulfillment: packed/shipped/delivered) blocks it.
+// Odoo's stock.picking has no separate "packing"/"ready"/"shipped" states
+// beyond assigned/done — 'assigned' IS "ready," and this milestone's
+// decision is that reserving stock alone does not yet count as fulfillment
+// starting. Re-checked LIVE against Odoo on every call, never against the
+// locally-cached marketplace_orders projection. The actual stock-unreserve
+// on cancellation is Odoo's own native behavior (cancelSalesOrder cancels
+// the linked picking(s) first, which is what releases the reservation) —
+// no custom inventory adjustment happens on this side.
+const CANCELLABLE_PICKING_STATES = new Set([null, "draft", "waiting", "confirmed", "assigned"]);
 
 exports.cancelMarketplaceOrder = onCall({ region: "us-central1" }, async (request) => {
   if (!request.auth) {
