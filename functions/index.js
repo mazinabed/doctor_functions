@@ -2239,7 +2239,9 @@ const {
   placeMarketplaceOrder,
   cancelMarketplaceOrder,
   getMarketplaceOrderStatus,
+  getMarketplaceDeliveryMethods,
 } = require("./commerce/marketplaceCheckout");
 exports.placeMarketplaceOrder = placeMarketplaceOrder;
 exports.cancelMarketplaceOrder = cancelMarketplaceOrder;
 exports.getMarketplaceOrderStatus = getMarketplaceOrderStatus;
+exports.getMarketplaceDeliveryMethods = getMarketplaceDeliveryMethods;

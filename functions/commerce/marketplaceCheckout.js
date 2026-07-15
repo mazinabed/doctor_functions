@@ -346,6 +346,18 @@ exports.getMarketplaceOrderStatus = onCall({ region: "us-central1" }, async (req
   return { orderId, status: data.status, live: result.data };
 });
 
+// Public, unauthenticated — delivery methods are non-sensitive general
+// store info (same public-browse posture as getMarketplaceCatalog.js), not
+// a protected/patient-identity-bound action. Needed by the pickup/delivery
+// picker step of checkout, called before a patient necessarily signs in.
+exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async () => {
+  const result = await callCommerce("getMarketplaceDeliveryMethodsForHealthcare", {});
+  if (!result.ok) {
+    throw new HttpsError("internal", "Could not read delivery methods. Please try again.");
+  }
+  return { methods: Array.isArray(result.data.methods) ? result.data.methods : [] };
+});
+
 // Exported for focused unit testing (tests/marketplace_checkout_guards.test.js)
 // — pure/near-pure guard logic, independent of the onCall wrapper.
 exports.isCommerceBillingOperational = isCommerceBillingOperational;
