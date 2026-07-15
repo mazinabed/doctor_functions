@@ -15,16 +15,29 @@
 // assumption, to support it.
 //
 // One-store-per-cart is enforced by the CALLER (the Flutter cart provider
-// only ever holds one orgId at a time) — this function trusts the single
-// orgId it's given. It does NOT independently verify every requested
-// productEngineId actually belongs to that orgId's Odoo company; Commerce's
-// own getLiveProductSnapshot has no per-org scoping either. This is the
-// SAME deferred multi-tenant boundary every other write bridge in this
-// ecosystem already defers to (TENANT_ARCHITECTURE_SAAS_EVALUATION.md,
-// single-Odoo-company reality) — not a gap invented or silently patched
-// here, and not safe to paper over with an ad-hoc check that would only
-// half-solve a problem the real fix (per-tenant Odoo company resolution)
-// already owns.
+// only ever holds one orgId at a time) for the common case, but this
+// function does NOT trust that: every submitted productEngineId is
+// independently verified server-side to belong to the submitted orgId's
+// own Odoo company (or be a genuinely shared record) — enforced in
+// trustydr-commerce/functions/src/marketplaceCheckout.ts's
+// isLineFromWrongStore, using each product's live company_id, never the
+// Flutter cart's or the cached Marketplace projection's say-so. A patient
+// submitting orgId=Store A with a product belonging to Store B is rejected
+// with a "wrong_store" reason, the same 409 path as a stale price/stock
+// mismatch.
+//
+// Commerce billing operational gate: resolveCommerceSubscriptionStatus
+// below reads medical_centers/{centerId}.commerceSubscriptionStatus
+// DIRECTLY from this project's own Firestore (never a cached eligibility
+// value, never inferred from the catalog or Marketplace sync having run
+// recently) immediately before every placeMarketplaceOrder call, and
+// rejects fast (before ever reserving an idempotency slot or calling
+// Commerce) if the store isn't currently operational. The SAME
+// freshly-resolved value is also forwarded to Commerce's
+// placeMarketplaceOrderForHealthcare, which independently re-applies the
+// canonical isCommerceBillingOperational definition as the authoritative
+// enforcement point (it's the one about to call Odoo) — defense in depth,
+// not a single trusted check.
 //
 // Idempotency (PRIMARY guard — Commerce's own marketplace_order_idempotency
 // check, in trustydr-commerce/functions/src/marketplaceCheckout.ts, is a
@@ -53,6 +66,41 @@ const admin = require("firebase-admin");
 const fetch = require("node-fetch");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
+
+// Must match trustydr-commerce/functions/src/activation.ts's own
+// PHARMACY_ORG_ID_PREFIX exactly — duplicated here because the two are
+// separate repos/languages with no shared package, same as this bridge's
+// hardcoded COMMERCE_BASE_URL above.
+const PHARMACY_ORG_ID_PREFIX = "hc_pharmacy_";
+
+// The SAME three-state definition as trustydr-commerce's own
+// isCommerceBillingOperational (lib/healthcareBridge.ts) — Commerce is
+// usable during 'trial'/'active'/'grace' only. Duplicated, not imported
+// (separate repos/languages); if either definition ever changes, the other
+// must be updated to match.
+function isCommerceBillingOperational(status) {
+  return status === "trial" || status === "active" || status === "grace";
+}
+
+// Reads commerceSubscriptionStatus DIRECTLY from this project's own
+// Firestore — no bridge call needed, since Healthcare already owns this
+// data (medical_centers/{centerId}, the confirmed billing owner, exactly
+// where startCommerceTrial.js/expireCenters.js write it). Returns null if
+// orgId doesn't resolve to a real Healthcare-origin pharmacy with a
+// facility on file — treated as NOT operational by the caller.
+async function resolveCommerceSubscriptionStatus(db, orgId) {
+  if (!orgId.startsWith(PHARMACY_ORG_ID_PREFIX)) return null;
+  const pharmacyOwnerUid = orgId.slice(PHARMACY_ORG_ID_PREFIX.length);
+
+  const userSnap = await db.collection("users").doc(pharmacyOwnerUid).get();
+  const centerId = userSnap.exists ? userSnap.data().centerId : null;
+  if (!centerId) return null;
+
+  const centerSnap = await db.collection("medical_centers").doc(centerId).get();
+  if (!centerSnap.exists) return null;
+
+  return centerSnap.data().commerceSubscriptionStatus || null;
+}
 
 async function callCommerce(endpoint, body) {
   let response;
@@ -109,6 +157,17 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
   }
 
   const db = admin.firestore();
+
+  // GUARD 1 — Commerce billing operational gate, checked BEFORE reserving
+  // an idempotency slot or calling Commerce at all: a non-operational store
+  // must fail fast and cheap, never consume a real idempotency attempt.
+  const commerceSubscriptionStatus = await resolveCommerceSubscriptionStatus(db, orgId);
+  if (!isCommerceBillingOperational(commerceSubscriptionStatus)) {
+    throw new HttpsError("failed-precondition", "This store is not currently available for orders.", {
+      code: "store_unavailable",
+    });
+  }
+
   const orderRef = db.collection("marketplace_orders").doc(idempotencyKey);
 
   const shouldCallCommerce = await db.runTransaction(async (tx) => {
@@ -152,6 +211,11 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     idempotencyKey,
     lines,
     deliveryCarrierEngineId: deliveryCarrierEngineId || undefined,
+    // Freshly resolved above, forwarded so Commerce's own authoritative
+    // re-check (the function actually about to call Odoo) never has to
+    // trust this bridge's fail-fast check alone — defense in depth against
+    // a billing-status change in the narrow window between the two reads.
+    pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
   });
 
   if (!result.ok) {
@@ -161,6 +225,13 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
         "failed-precondition",
         result.data.error || "Some items are no longer available.",
         { unavailable: result.data.unavailable || [] },
+      );
+    }
+    if (result.status === 403) {
+      throw new HttpsError(
+        "failed-precondition",
+        result.data.message || "This store is not currently available for orders.",
+        { code: "store_unavailable" },
       );
     }
     throw new HttpsError("internal", result.data.error || "Could not place the order. Please try again.");
@@ -274,3 +345,8 @@ exports.getMarketplaceOrderStatus = onCall({ region: "us-central1" }, async (req
 
   return { orderId, status: data.status, live: result.data };
 });
+
+// Exported for focused unit testing (tests/marketplace_checkout_guards.test.js)
+// — pure/near-pure guard logic, independent of the onCall wrapper.
+exports.isCommerceBillingOperational = isCommerceBillingOperational;
+exports.resolveCommerceSubscriptionStatus = resolveCommerceSubscriptionStatus;
