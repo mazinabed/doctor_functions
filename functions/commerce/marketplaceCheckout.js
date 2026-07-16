@@ -307,6 +307,32 @@ exports.cancelMarketplaceOrder = onCall({ region: "us-central1" }, async (reques
     throw new HttpsError("internal", cancelResult.data.error || "Could not cancel the order.");
   }
 
+  // LIVE-CONFIRMED (2026-07-16): a non-throwing response from
+  // cancelMarketplaceOrderForHealthcare does NOT guarantee Odoo actually
+  // cancelled the order — sale.order.action_cancel() has been observed to
+  // return HTTP 200 while leaving state as "sale" (root cause not yet
+  // understood; the linked picking DOES correctly reach "cancel" — only
+  // the sale.order's own state fails to flip). Never mark the patient-
+  // facing record cancelled on trust alone: only state === "cancel" is
+  // treated as a real cancellation. Anything else surfaces as a clear
+  // error, and marketplace_orders stays "confirmed" — a false "Cancelled"
+  // shown to a patient while the pharmacy could still fulfill the order
+  // is a worse failure mode than an honest "couldn't cancel, try again."
+  if (cancelResult.data.state !== "cancel") {
+    console.error(
+      JSON.stringify({
+        msg: "cancelMarketplaceOrder.odoo_state_not_cancelled",
+        orderId,
+        engineId: data.order.engineId,
+        returnedState: cancelResult.data.state,
+      }),
+    );
+    throw new HttpsError(
+      "internal",
+      "This order could not be cancelled. Please contact the pharmacy directly.",
+    );
+  }
+
   await orderRef.update({
     status: "cancelled",
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
