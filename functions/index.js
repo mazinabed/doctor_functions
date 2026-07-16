@@ -2257,3 +2257,22 @@ exports.placeMarketplaceOrder = placeMarketplaceOrder;
 exports.cancelMarketplaceOrder = cancelMarketplaceOrder;
 exports.getMarketplaceOrderStatus = getMarketplaceOrderStatus;
 exports.getMarketplaceDeliveryMethods = getMarketplaceDeliveryMethods;
+
+// ─── Pharmacy Operations Dashboard (Phase 1, Increment 2) — order actions ──
+// Accept/Reject/Start Preparing/Mark Ready for Pickup/Mark Out for
+// Delivery/Mark Completed — see pharmacyOrderActions.js's own header for
+// the mandatory Commerce-first, projection-after-success write order.
+const {
+  acceptPharmacyOrder,
+  rejectPharmacyOrder,
+  startPharmacyOrderPreparation,
+  markPharmacyOrderReadyForPickup,
+  markPharmacyOrderOutForDelivery,
+  markPharmacyOrderCompleted,
+} = require("./commerce/pharmacyOrderActions");
+exports.acceptPharmacyOrder = acceptPharmacyOrder;
+exports.rejectPharmacyOrder = rejectPharmacyOrder;
+exports.startPharmacyOrderPreparation = startPharmacyOrderPreparation;
+exports.markPharmacyOrderReadyForPickup = markPharmacyOrderReadyForPickup;
+exports.markPharmacyOrderOutForDelivery = markPharmacyOrderOutForDelivery;
+exports.markPharmacyOrderCompleted = markPharmacyOrderCompleted;
