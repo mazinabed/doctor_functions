@@ -2236,11 +2236,13 @@ exports.adminBulkImportMarketplaceCategories = adminBulkImportMarketplaceCategor
 // patient-identity-bound — see marketplaceCheckout.js's own header for the
 // full idempotency/cancellation-boundary contract.
 const {
+  getMarketplaceCheckoutProfile,
   placeMarketplaceOrder,
   cancelMarketplaceOrder,
   getMarketplaceOrderStatus,
   getMarketplaceDeliveryMethods,
 } = require("./commerce/marketplaceCheckout");
+exports.getMarketplaceCheckoutProfile = getMarketplaceCheckoutProfile;
 exports.placeMarketplaceOrder = placeMarketplaceOrder;
 exports.cancelMarketplaceOrder = cancelMarketplaceOrder;
 exports.getMarketplaceOrderStatus = getMarketplaceOrderStatus;

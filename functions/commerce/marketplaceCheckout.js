@@ -82,6 +82,21 @@ function isCommerceBillingOperational(status) {
   return status === "trial" || status === "active" || status === "grace";
 }
 
+// TrustyDr app locale ('en'/'ar'/'ku', the same three easy_localization
+// codes used across every other Flutter->Healthcare bridge) -> Odoo
+// res.lang code. Resolved server-side from a client-submitted locale hint,
+// never a client-submitted raw Odoo lang string — the client only ever
+// gets to pick one of the app's own three supported locales, same trust
+// boundary as everything else in this file. No Kurdish res.lang record
+// exists on the connected Odoo instance (confirmed live 2026-07-14, see
+// TrustyDr-pwa/lib/core/providers/marketplace_providers.dart's own note),
+// so 'ku' maps to Arabic, matching that same file's Kurdish-falls-to-Arabic
+// convention.
+const ODOO_LANG_BY_LOCALE = { en: "en_US", ar: "ar_001", ku: "ar_001" };
+function resolveOdooLang(locale) {
+  return ODOO_LANG_BY_LOCALE[locale] || undefined;
+}
+
 // Reads commerceSubscriptionStatus DIRECTLY from this project's own
 // Firestore — no bridge call needed, since Healthcare already owns this
 // data (medical_centers/{centerId}, the confirmed billing owner, exactly
@@ -124,14 +139,58 @@ async function callCommerce(endpoint, body) {
   return { ok: response.ok, status: response.status, data };
 }
 
+// Milestone 6 checkout gaps — server-side resolution of the authenticated
+// patient's real profile for checkout prefill. Never trusts a client-
+// submitted identity: reads users/{uid} directly with request.auth.uid,
+// the same trust boundary placeMarketplaceOrder below now uses for the
+// Odoo customer record itself. homeAddress (province/city/full/note) is
+// TrustyDr-pwa's own existing saved-address shape (home_address_page.dart)
+// — returned as-is so the Flutter checkout form can prefill its delivery
+// fields, but this is only a DEFAULT: the patient may still edit the
+// address for this specific order (see EngineDeliveryAddress in
+// trustydr-commerce), the profile's saved address itself is never
+// overwritten by a checkout edit.
+exports.getMarketplaceCheckoutProfile = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "You must be signed in.");
+  }
+  const db = admin.firestore();
+  const userSnap = await db.collection("users").doc(request.auth.uid).get();
+  const data = userSnap.exists ? userSnap.data() : {};
+
+  const homeAddress =
+    data.homeAddress && typeof data.homeAddress === "object"
+      ? {
+          province: data.homeAddress.province || "",
+          city: data.homeAddress.city || "",
+          full: data.homeAddress.full || "",
+          note: data.homeAddress.note || "",
+        }
+      : null;
+
+  return {
+    name: typeof data.name === "string" ? data.name : "",
+    phone: typeof data.phoneNumber === "string" ? data.phoneNumber : "",
+    homeAddress,
+  };
+});
+
 exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "You must be signed in to place an order.");
   }
   const patientId = request.auth.uid;
 
-  const { orgId, idempotencyKey, lines, deliveryCarrierEngineId, patientName, patientPhone } =
-    request.data || {};
+  const {
+    orgId,
+    idempotencyKey,
+    lines,
+    deliveryCarrierEngineId,
+    deliveryAddress,
+    locale,
+    storeNameEn,
+    storeNameAr,
+  } = request.data || {};
 
   if (
     !orgId ||
@@ -152,11 +211,45 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
       "Every line requires a productEngineId and a positive quantity.",
     );
   }
-  if (!patientName || typeof patientName !== "string") {
-    throw new HttpsError("invalid-argument", "patientName is required.");
+  if (deliveryCarrierEngineId) {
+    const addr = deliveryAddress;
+    if (
+      !addr ||
+      typeof addr !== "object" ||
+      !addr.province ||
+      !addr.city ||
+      !addr.full
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "A delivery address (province, city, and full address) is required for home delivery.",
+      );
+    }
   }
 
   const db = admin.firestore();
+
+  // Identity is resolved SERVER-SIDE from the authenticated user's own
+  // profile — never from client-submitted patientName/patientPhone (that
+  // field pair no longer exists in the request payload at all). This is
+  // the fix for the "generic User" Odoo customer bug: a stale or empty
+  // client-submitted name can never reach Odoo again. The patient may
+  // still edit per-order DELIVERY contact info via deliveryAddress.name/
+  // .phone below — that's a shipping-address detail, not the identity
+  // bound to res.partner.ref.
+  const patientProfileSnap = await db.collection("users").doc(patientId).get();
+  const patientProfile = patientProfileSnap.exists ? patientProfileSnap.data() : {};
+  const resolvedName = typeof patientProfile.name === "string" ? patientProfile.name.trim() : "";
+  if (!resolvedName) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Please complete your profile name before placing an order.",
+    );
+  }
+  const resolvedPhone =
+    typeof patientProfile.phoneNumber === "string" && patientProfile.phoneNumber
+      ? patientProfile.phoneNumber
+      : undefined;
 
   // GUARD 1 — Commerce billing operational gate, checked BEFORE reserving
   // an idempotency slot or calling Commerce at all: a non-operational store
@@ -180,6 +273,23 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
         status: "pending",
         requestedLines: lines,
         deliveryCarrierEngineId: deliveryCarrierEngineId || null,
+        // Snapshotted here (immutable receipt architecture) — this order's
+        // actual delivery destination, which may differ from the patient's
+        // saved users/{uid}.homeAddress. Null for pickup orders.
+        deliveryAddress: deliveryCarrierEngineId ? deliveryAddress : null,
+        // Store name and patient contact snapshots — resolved/validated
+        // below (patientName/patientPhone come from the SERVER-resolved
+        // profile, never the client) but written here inside the same
+        // reservation for the My Orders / Order Details pages to render
+        // without a runtime join to another collection (firestore-safety.md
+        // §7 — a UI widget must not read from more than one collection to
+        // render a single record). storeName is display-only, sourced from
+        // the same Marketplace projection the cart itself already trusts
+        // for display purposes.
+        storeNameEn: typeof storeNameEn === "string" ? storeNameEn : null,
+        storeNameAr: typeof storeNameAr === "string" ? storeNameAr : null,
+        patientName: resolvedName,
+        patientPhone: resolvedPhone || null,
         order: null,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -206,11 +316,13 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
   const result = await callCommerce("placeMarketplaceOrderForHealthcare", {
     orgId,
     patientRef: patientId,
-    patientName,
-    patientPhone: patientPhone || undefined,
+    patientName: resolvedName,
+    patientPhone: resolvedPhone,
     idempotencyKey,
     lines,
     deliveryCarrierEngineId: deliveryCarrierEngineId || undefined,
+    deliveryAddress: deliveryCarrierEngineId ? deliveryAddress : undefined,
+    lang: resolveOdooLang(locale),
     // Freshly resolved above, forwarded so Commerce's own authoritative
     // re-check (the function actually about to call Odoo) never has to
     // trust this bridge's fail-fast check alone — defense in depth against
@@ -232,6 +344,13 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
         "failed-precondition",
         result.data.message || "This store is not currently available for orders.",
         { code: "store_unavailable" },
+      );
+    }
+    if (result.status === 400 && result.data.error === "delivery_address_required") {
+      throw new HttpsError(
+        "invalid-argument",
+        result.data.message || "A delivery address is required for home delivery.",
+        { code: "delivery_address_required" },
       );
     }
     throw new HttpsError("internal", result.data.error || "Could not place the order. Please try again.");
@@ -378,16 +497,61 @@ exports.getMarketplaceOrderStatus = onCall({ region: "us-central1" }, async (req
   return { orderId, status: data.status, live: result.data };
 });
 
+// Fixed, reviewed EN/AR/KU labels — never derived from Odoo's raw English
+// carrier name (today just one real record, "Standard delivery," English-
+// only; confirmed live 2026-07-16). Keyed by the stable semantic
+// deliveryType Commerce returns (or "pickup", synthesized entirely here —
+// Odoo has no native pickup marker), so a future Odoo rename/second carrier
+// never breaks the patient-facing label. The Flutter client localizes
+// purely by reading name_en/name_ar/name_ku off the deliveryType-matched
+// entry — it never inspects English text to guess a translation.
+const DELIVERY_METHOD_LABELS = {
+  pickup: { name_en: "Store Pickup", name_ar: "الاستلام من المتجر", name_ku: "وەرگرتن لە فرۆشگا" },
+  delivery: { name_en: "Home Delivery", name_ar: "التوصيل إلى المنزل", name_ku: "گەیاندن بۆ ماڵەوە" },
+};
+
 // Public, unauthenticated — delivery methods are non-sensitive general
 // store info (same public-browse posture as getMarketplaceCatalog.js), not
 // a protected/patient-identity-bound action. Needed by the pickup/delivery
 // picker step of checkout, called before a patient necessarily signs in.
+//
+// Response shape (one entry per option, pickup always first):
+//   { carrierEngineId: string|null, deliveryType: 'pickup'|'delivery',
+//     name_en, name_ar, name_ku, fee: number, currency: string|null }
+// carrierEngineId is null for pickup (no Odoo delivery.carrier — Phase-1
+// no-carrier-selected checkout path, see marketplaceCheckout.ts's own
+// deliveryCarrierEngineId: null branch, which requires no shipping address).
 exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async () => {
   const result = await callCommerce("getMarketplaceDeliveryMethodsForHealthcare", {});
   if (!result.ok) {
     throw new HttpsError("internal", "Could not read delivery methods. Please try again.");
   }
-  return { methods: Array.isArray(result.data.methods) ? result.data.methods : [] };
+  const rawMethods = Array.isArray(result.data.methods) ? result.data.methods : [];
+
+  const pickup = {
+    carrierEngineId: null,
+    deliveryType: "pickup",
+    ...DELIVERY_METHOD_LABELS.pickup,
+    fee: 0,
+    currency: null,
+  };
+
+  const deliveryMethods = rawMethods
+    .filter((m) => m && m.active !== false)
+    .map((m) => ({
+      carrierEngineId: m.engineId,
+      deliveryType: "delivery",
+      ...DELIVERY_METHOD_LABELS.delivery,
+      fee: typeof m.fixedPrice === "number" ? m.fixedPrice : 0,
+      // listDeliveryMethods() (trustydr-commerce) doesn't return a
+      // per-carrier currency today — the order's own confirmed currencyName
+      // (EnginePatientOrderResult, read at order-confirmation time) is the
+      // authoritative currency for display; this field is reserved for a
+      // future multi-currency carrier but always null right now.
+      currency: null,
+    }));
+
+  return { methods: [pickup, ...deliveryMethods] };
 });
 
 // Exported for focused unit testing (tests/marketplace_checkout_guards.test.js)
