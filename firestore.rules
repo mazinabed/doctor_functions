@@ -2365,11 +2365,27 @@ service cloud.firestore {
     // (money/state-owned-by-server fields, matching this ecosystem's
     // existing convention of admin/Cloud-Function-only writes for anything
     // Odoo/Commerce is the pricing authority for).
+    //
+    // Pharmacy Operations Dashboard (Phase 1) — the owning pharmacy's owner
+    // or any active pharmacy_members staff may also read (coarse
+    // membership check, same pattern isPharmacyMember/isPharmacyOwner
+    // already provide for other pharmacy-scoped collections; fine-grained
+    // "which actions/tabs a given staff role sees" stays an application-
+    // layer concern — pharmacy_permission.dart client-side, and the
+    // permission check inside each pharmacyOrderActions.js Cloud Function
+    // server-side — not encoded here). pharmacyOwnerUid is null on a
+    // pending/failed order-creation attempt (see marketplaceCheckout.js),
+    // so no pharmacy read path exists for those — matches
+    // fulfillmentStatus also staying null until genuine confirmation.
     // ───────────────────────────────────────────────────────────────────────
 
     match /marketplace_orders/{orderId} {
       allow read: if isSignedIn()
-        && (resource.data.patientId == request.auth.uid || isAdmin());
+        && (resource.data.patientId == request.auth.uid
+            || isAdmin()
+            || (resource.data.pharmacyOwnerUid != null
+                && (isPharmacyOwner(resource.data.pharmacyOwnerUid)
+                    || isPharmacyMember(resource.data.pharmacyOwnerUid))));
       allow write: if false;
     }
 

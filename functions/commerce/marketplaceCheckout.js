@@ -73,6 +73,20 @@ const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.
 // hardcoded COMMERCE_BASE_URL above.
 const PHARMACY_ORG_ID_PREFIX = "hc_pharmacy_";
 
+// pharmacy_providers/{uid} doc id IS the owner's uid (confirmed against
+// resolveAccessContext.js's own read pattern) — so this is also exactly
+// the id the Pharmacy Operations dashboard (doctor_portal) scopes its
+// marketplace_orders reads by by, and the same id firestore.rules'
+// existing isPharmacyMember/isPharmacyOwner helpers expect. Returns null
+// for a non-pharmacy orgId (never throws) — callers treat null as "no
+// pharmacy scoping possible," matching resolveCommerceSubscriptionStatus's
+// own existing null-on-mismatch convention below.
+function pharmacyOwnerUidFromOrgId(orgId) {
+  return orgId.startsWith(PHARMACY_ORG_ID_PREFIX)
+    ? orgId.slice(PHARMACY_ORG_ID_PREFIX.length)
+    : null;
+}
+
 // The SAME three-state definition as trustydr-commerce's own
 // isCommerceBillingOperational (lib/healthcareBridge.ts) — Commerce is
 // usable during 'trial'/'active'/'grace' only. Duplicated, not imported
@@ -104,8 +118,8 @@ function resolveOdooLang(locale) {
 // orgId doesn't resolve to a real Healthcare-origin pharmacy with a
 // facility on file — treated as NOT operational by the caller.
 async function resolveCommerceSubscriptionStatus(db, orgId) {
-  if (!orgId.startsWith(PHARMACY_ORG_ID_PREFIX)) return null;
-  const pharmacyOwnerUid = orgId.slice(PHARMACY_ORG_ID_PREFIX.length);
+  const pharmacyOwnerUid = pharmacyOwnerUidFromOrgId(orgId);
+  if (!pharmacyOwnerUid) return null;
 
   const userSnap = await db.collection("users").doc(pharmacyOwnerUid).get();
   const centerId = userSnap.exists ? userSnap.data().centerId : null;
@@ -291,6 +305,23 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
         patientName: resolvedName,
         patientPhone: resolvedPhone || null,
         order: null,
+        // Pharmacy Operations Dashboard (Phase 1) — pharmacyOwnerUid scopes
+        // this doc for a staff-side read (firestore.rules' existing
+        // isPharmacyMember/isPharmacyOwner helpers), written unconditionally
+        // here (even on a since-failed attempt) so support/diagnostics can
+        // always resolve which pharmacy an attempt belonged to.
+        // fulfillmentStatus stays null until the order is ACTUALLY confirmed
+        // in Odoo below — a pending/failed attempt must never appear in a
+        // pharmacy's Order Queue. This is a NEW, separate field from
+        // `status` above (order-creation success) — see marketplace_orders
+        // schema notes in the Pharmacy Operations Dashboard plan; `status`
+        // keeps its existing, already-deployed meaning unchanged.
+        pharmacyOwnerUid: pharmacyOwnerUidFromOrgId(orgId),
+        fulfillmentStatus: null,
+        saleOrderState: null,
+        pickingState: null,
+        fulfillmentStatusHistory: [],
+        staffNote: null,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
@@ -356,9 +387,26 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     throw new HttpsError("internal", result.data.error || "Could not place the order. Please try again.");
   }
 
+  // Pharmacy Operations Dashboard (Phase 1) — the order only becomes
+  // visible in a pharmacy's Order Queue once it's genuinely confirmed in
+  // Odoo (never on the pending/failed attempt above). saleOrderState is
+  // seeded from Commerce's own confirmed response (EnginePatientOrderResult
+  // .status, already read live from Odoo by createPatientOrder — never
+  // re-guessed here); pickingState starts null (no fulfillment action has
+  // happened yet). fulfillmentStatusHistory entries use Timestamp.now(),
+  // NOT FieldValue.serverTimestamp() — Firestore does not allow the server-
+  // timestamp sentinel inside an array element.
   await orderRef.update({
     status: "confirmed",
     order: result.data.order,
+    fulfillmentStatus: "new",
+    saleOrderState: (result.data.order && result.data.order.status) || null,
+    fulfillmentStatusHistory: admin.firestore.FieldValue.arrayUnion({
+      status: "new",
+      at: admin.firestore.Timestamp.now(),
+      byUid: patientId,
+      byName: resolvedName,
+    }),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
@@ -452,8 +500,18 @@ exports.cancelMarketplaceOrder = onCall({ region: "us-central1" }, async (reques
     );
   }
 
+  // Pharmacy Operations Dashboard (Phase 1) — a patient-cancelled order
+  // must also leave the pharmacy's active Order Queue, regardless of what
+  // fulfillment stage the pharmacy had it at (preparing/ready/etc.).
   await orderRef.update({
     status: "cancelled",
+    fulfillmentStatus: "cancelled",
+    fulfillmentStatusHistory: admin.firestore.FieldValue.arrayUnion({
+      status: "cancelled",
+      at: admin.firestore.Timestamp.now(),
+      byUid: patientId,
+      byName: data.patientName || "",
+    }),
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 

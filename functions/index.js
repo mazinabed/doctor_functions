@@ -2169,6 +2169,16 @@ const { onLabAppointmentStatusUpdated } = require('./notifications/onLabAppointm
 exports.onLabAppointmentCreated       = onLabAppointmentCreated;
 exports.onLabAppointmentStatusUpdated = onLabAppointmentStatusUpdated;
 
+// ─── Pharmacy Operations Dashboard Notifications (Phase 1) ─────────────────────
+// Friendly, transition-specific push to the patient whenever a pharmacy
+// action (or patient cancellation) changes marketplace_orders.fulfillmentStatus
+// — see onMarketplaceOrderFulfillmentUpdated.js's own header for the full
+// "never before Odoo confirms + Firestore projection updates" contract.
+const {
+  onMarketplaceOrderFulfillmentUpdated,
+} = require('./notifications/onMarketplaceOrderFulfillmentUpdated');
+exports.onMarketplaceOrderFulfillmentUpdated = onMarketplaceOrderFulfillmentUpdated;
+
 // ─── Schedule Guard Domain ─────────────────────────────────────────────────────
 // Server-side enforcement for protected schedule operations.
 // All six functions use Firestore transactions to atomically validate
