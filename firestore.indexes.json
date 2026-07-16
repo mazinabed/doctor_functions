@@ -589,6 +589,14 @@
         { "fieldPath": "displayOrder",  "order": "ASCENDING" },
         { "fieldPath": "createdAt",     "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "marketplace_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "patientId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
