@@ -575,7 +575,12 @@ const DELIVERY_METHOD_LABELS = {
 //
 // Response shape (one entry per option, pickup always first):
 //   { carrierEngineId: string|null, deliveryType: 'pickup'|'delivery',
-//     name_en, name_ar, name_ku, fee: number, currency: string|null }
+//     name_en, name_ar, name_ku, fee: number, freeOverThreshold: number|null,
+//     currency: string|null }
+// freeOverThreshold (null for pickup) is a DISPLAY ESTIMATE only — Odoo's
+// delivery.carrier.free_over/amount, confirmed live 2026-07-16 — the
+// authoritative delivery amount is always recomputed server-side at
+// order-confirmation time, never trusted from this pre-checkout read.
 // carrierEngineId is null for pickup (no Odoo delivery.carrier — Phase-1
 // no-carrier-selected checkout path, see marketplaceCheckout.ts's own
 // deliveryCarrierEngineId: null branch, which requires no shipping address).
@@ -591,6 +596,7 @@ exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async 
     deliveryType: "pickup",
     ...DELIVERY_METHOD_LABELS.pickup,
     fee: 0,
+    freeOverThreshold: null,
     currency: null,
   };
 
@@ -601,6 +607,7 @@ exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async 
       deliveryType: "delivery",
       ...DELIVERY_METHOD_LABELS.delivery,
       fee: typeof m.fixedPrice === "number" ? m.fixedPrice : 0,
+      freeOverThreshold: typeof m.freeOverThreshold === "number" ? m.freeOverThreshold : null,
       // listDeliveryMethods() (trustydr-commerce) doesn't return a
       // per-carrier currency today — the order's own confirmed currencyName
       // (EnginePatientOrderResult, read at order-confirmation time) is the
