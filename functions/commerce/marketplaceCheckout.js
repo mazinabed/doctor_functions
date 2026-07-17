@@ -576,7 +576,8 @@ const DELIVERY_METHOD_LABELS = {
 // Response shape (one entry per option, pickup always first):
 //   { carrierEngineId: string|null, deliveryType: 'pickup'|'delivery',
 //     name_en, name_ar, name_ku, fee: number, freeOverThreshold: number|null,
-//     currency: string|null }
+//     currency: string|null, estimatedDeliveryMinutesMin: number|null,
+//     estimatedDeliveryMinutesMax: number|null, note_en/ar/ku: string|null }
 // freeOverThreshold (null for pickup) is a DISPLAY ESTIMATE only — Odoo's
 // delivery.carrier.free_over/amount, confirmed live 2026-07-16 — the
 // authoritative delivery amount is always recomputed server-side at
@@ -584,8 +585,13 @@ const DELIVERY_METHOD_LABELS = {
 // carrierEngineId is null for pickup (no Odoo delivery.carrier — Phase-1
 // no-carrier-selected checkout path, see marketplaceCheckout.ts's own
 // deliveryCarrierEngineId: null branch, which requires no shipping address).
-exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async () => {
-  const result = await callCommerce("getMarketplaceDeliveryMethodsForHealthcare", {});
+exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async (request) => {
+  const { orgId } = request.data || {};
+  if (!orgId || typeof orgId !== "string") {
+    throw new HttpsError("invalid-argument", "orgId is required.");
+  }
+
+  const result = await callCommerce("getMarketplaceDeliveryMethodsForHealthcare", { orgId });
   if (!result.ok) {
     throw new HttpsError("internal", "Could not read delivery methods. Please try again.");
   }
@@ -598,6 +604,11 @@ exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async 
     fee: 0,
     freeOverThreshold: null,
     currency: null,
+    estimatedDeliveryMinutesMin: null,
+    estimatedDeliveryMinutesMax: null,
+    note_en: null,
+    note_ar: null,
+    note_ku: null,
   };
 
   const deliveryMethods = rawMethods
@@ -614,6 +625,16 @@ exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async 
       // authoritative currency for display; this field is reserved for a
       // future multi-currency carrier but always null right now.
       currency: null,
+      // Store-owned display fields (organizations/{orgId}.storeSettings.
+      // delivery), passed straight through from the enriched Commerce
+      // response — never derived or guessed here.
+      estimatedDeliveryMinutesMin:
+        typeof m.estimatedDeliveryMinutesMin === "number" ? m.estimatedDeliveryMinutesMin : null,
+      estimatedDeliveryMinutesMax:
+        typeof m.estimatedDeliveryMinutesMax === "number" ? m.estimatedDeliveryMinutesMax : null,
+      note_en: typeof m.note_en === "string" ? m.note_en : null,
+      note_ar: typeof m.note_ar === "string" ? m.note_ar : null,
+      note_ku: typeof m.note_ku === "string" ? m.note_ku : null,
     }));
 
   return { methods: [pickup, ...deliveryMethods] };
