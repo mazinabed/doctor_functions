@@ -225,7 +225,13 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
         currencyName: p.currencyName ?? null,
         isFeatured: Boolean(p.isFeatured),
         availabilityBadge: p.availabilityBadge,
+        // Patient Marketplace gallery (2026-07-18) — imageUrl unchanged
+        // (existing consumers keep working); galleryImageUrls is new,
+        // already Primary-first/deduplicated/capped-at-3 by Commerce's own
+        // buildOutwardImageContract before it ever reaches this function —
+        // passed through as-is, not re-derived here.
         imageUrl: p.imageUrl ?? null,
+        galleryImageUrls: Array.isArray(p.galleryImageUrls) ? p.galleryImageUrls : [],
         storeName_en: store?.facilityName_en ?? null,
         storeName_ar: store?.facilityName_ar ?? null,
         storeName_ku: store?.facilityName_ku ?? null,
