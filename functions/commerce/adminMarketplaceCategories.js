@@ -22,11 +22,41 @@
 // Commerce Firestore is the source of truth for the taxonomy — this file
 // only relays; it holds no category logic of its own (key generation,
 // duplicate/cycle checks all live in marketplaceCategoryEngine.ts).
+//
+// Security fix (Milestone 2/3, Variant & Attribute Foundation, 2026-07-18):
+// Commerce's admin CRUD endpoints are now IAM-invoker-restricted to THIS
+// project's own runtime service account (see Commerce's
+// HEALTHCARE_SERVICE_ACCOUNT_EMAIL doc comment) — a plain unauthenticated
+// fetch() would now be rejected by Cloud Run itself before Commerce's code
+// even runs. Every call mints a real Google-signed OIDC identity token
+// (via this function's own ambient service-account credentials — no key
+// file, no secret, same "use the already-authenticated identity" principle
+// as this repo's other gcloud-based scripts) scoped to the exact target
+// URL as audience, and attaches it as a Bearer token. This is what actually
+// proves "this request came from Healthcare's backend," not the actorUid
+// field, which remains only an audit-trail label.
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { getFirestore } = require("firebase-admin/firestore");
+const { GoogleAuth } = require("google-auth-library");
 const fetch = require("node-fetch");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
+
+const googleAuth = new GoogleAuth();
+// One IdTokenClient per target URL, reused across warm-instance calls —
+// each Cloud Function endpoint is its own distinct audience, so a client
+// authenticated for one endpoint's audience cannot be reused for another.
+const idTokenClientsByUrl = new Map();
+
+async function getAuthHeaders(targetUrl) {
+  let client = idTokenClientsByUrl.get(targetUrl);
+  if (!client) {
+    client = await googleAuth.getIdTokenClient(targetUrl);
+    idTokenClientsByUrl.set(targetUrl, client);
+  }
+  const headers = await client.getRequestHeaders(targetUrl);
+  return { ...headers, "Content-Type": "application/json" };
+}
 
 async function requireAdmin(request) {
   if (!request.auth) {
@@ -39,11 +69,13 @@ async function requireAdmin(request) {
 }
 
 async function callCommerce(endpoint, body) {
+  const targetUrl = `${COMMERCE_BASE_URL}/${endpoint}`;
   let response;
   try {
-    response = await fetch(`${COMMERCE_BASE_URL}/${endpoint}`, {
+    const headers = await getAuthHeaders(targetUrl);
+    response = await fetch(targetUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
   } catch (err) {

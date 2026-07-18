@@ -2241,6 +2241,28 @@ exports.adminDeleteMarketplaceCategory = adminDeleteMarketplaceCategory;
 exports.adminSyncMarketplaceCategoriesToOdoo = adminSyncMarketplaceCategoriesToOdoo;
 exports.adminBulkImportMarketplaceCategories = adminBulkImportMarketplaceCategories;
 
+// ─── TrustyDr Commerce Bridge — Global Attribute Engine (Milestone 3) ──────
+// Admin-only CRUD (mydoctor_admin -> Healthcare -> Commerce) — see
+// adminMarketplaceAttributes.js's own header for the full contract. Same
+// admin gate and OIDC-authenticated Commerce call pattern as
+// adminMarketplaceCategories.js above.
+const {
+  adminListAttributeDefinitions,
+  adminCreateAttributeDefinition,
+  adminUpdateAttributeDefinition,
+  adminDeleteAttributeDefinition,
+  adminCreateAttributeValue,
+  adminUpdateAttributeValue,
+  adminDeleteAttributeValue,
+} = require("./commerce/adminMarketplaceAttributes");
+exports.adminListAttributeDefinitions = adminListAttributeDefinitions;
+exports.adminCreateAttributeDefinition = adminCreateAttributeDefinition;
+exports.adminUpdateAttributeDefinition = adminUpdateAttributeDefinition;
+exports.adminDeleteAttributeDefinition = adminDeleteAttributeDefinition;
+exports.adminCreateAttributeValue = adminCreateAttributeValue;
+exports.adminUpdateAttributeValue = adminUpdateAttributeValue;
+exports.adminDeleteAttributeValue = adminDeleteAttributeValue;
+
 // ─── TrustyDr Commerce Bridge — Milestone 6 (Cart, Checkout, Order Creation) ─
 // Patient-App-facing, Healthcare -> Commerce, write-capable and
 // patient-identity-bound — see marketplaceCheckout.js's own header for the
