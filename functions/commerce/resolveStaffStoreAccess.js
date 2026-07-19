@@ -150,6 +150,13 @@ exports.resolveStaffStoreAccess = onRequest(
         uid: data.uid || null,
         displayName: data.displayName || "",
         phoneNumber: data.phoneNumber || "",
+        // Commerce Store Roles & Permissions (Checkpoint 2, 2026-07-19) —
+        // the pharmacy_members role string (manager/pharmacist/receptionist/
+        // billing/pharmacy_admin), used only to pick a sensible starting
+        // Store role template on first Commerce session; not a clinical or
+        // otherwise sensitive field, and Commerce already reads this same
+        // member document's storePermissions above.
+        role: data.role || null,
         storePermissions,
         pharmacyCommerceSubscriptionStatus,
         pharmacyCommerceTrialEnds,
