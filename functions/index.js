@@ -2215,6 +2215,12 @@ exports.startCommerceTrial = startCommerceTrial;
 const { getMarketplaceCatalog } = require("./commerce/getMarketplaceCatalog");
 exports.getMarketplaceCatalog = getMarketplaceCatalog;
 
+// ─── TrustyDr Commerce Bridge — Patient Product Experience (Milestone 5) ───
+// Live single-product detail read (variants/attributes/fresh price+stock)
+// — see getMarketplaceProductDetail.js's own header for the full contract.
+const { getMarketplaceProductDetail } = require("./commerce/getMarketplaceProductDetail");
+exports.getMarketplaceProductDetail = getMarketplaceProductDetail;
+
 // ─── TrustyDr Commerce Bridge — Phase 1C (Patient Marketplace, browse-only) ─
 // Store Discovery aggregate — see getActiveMarketplaceStores.js's own header
 // for the full contract.
