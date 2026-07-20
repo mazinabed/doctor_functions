@@ -407,6 +407,95 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
   return { orderId: orderRef.id, fulfillmentStatus: "completed" };
 });
 
+// ─── Assign / Reassign Delivery Person ──────────────────────────────────────
+// Milestone 7 (Simple Delivery Management). Deliberately NOT built on
+// applyFulfillmentTransition — assignment is order metadata, never a
+// fulfillmentStatus change (explicit product direction: "I do NOT want
+// assignment to become a fulfillment status"). This still appends to the
+// SAME fulfillmentStatusHistory array (reusing the existing history/event
+// architecture, not a parallel system) with a distinct `status` value
+// ('driver_assigned' | 'driver_reassigned') the Flutter timeline special-
+// cases for display. Gated on 'orders_fulfillment' — the same permission
+// key that already gates every other fulfillment-adjacent action in this
+// file.
+exports.assignPharmacyOrderDeliveryPerson = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "You must be signed in.");
+  }
+  const { orderId, deliveryPersonId } = request.data || {};
+  if (!deliveryPersonId || typeof deliveryPersonId !== "string") {
+    throw new HttpsError("invalid-argument", "deliveryPersonId is required.");
+  }
+
+  const db = admin.firestore();
+  const { orderRef, data } = await loadOrderForAction(db, orderId);
+  const { actorName } = await authorizePharmacyStaff(
+    db,
+    request.auth.uid,
+    data.pharmacyOwnerUid,
+    "orders_fulfillment",
+  );
+
+  // Assignment only makes sense before delivery has concluded — mirrors the
+  // "before delivery is completed" bound the product spec calls out
+  // explicitly for reassignment.
+  const assignableStatuses = ["accepted", "preparing", "readyForPickup", "outForDelivery"];
+  if (!assignableStatuses.includes(data.fulfillmentStatus)) {
+    throw new HttpsError("failed-precondition", "This order can no longer be assigned a delivery person.");
+  }
+
+  const personRef = db
+    .collection("pharmacy_providers")
+    .doc(data.pharmacyOwnerUid)
+    .collection("delivery_personnel")
+    .doc(deliveryPersonId);
+  const personSnap = await personRef.get();
+  if (!personSnap.exists) {
+    throw new HttpsError("not-found", "Delivery person not found.");
+  }
+  const personData = personSnap.data();
+  if (personData.status !== "active") {
+    throw new HttpsError("failed-precondition", "This delivery person is not active.");
+  }
+  const driverName = personData.name || "";
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(orderRef);
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "Order not found.");
+    }
+    const current = snap.data();
+    if (!assignableStatuses.includes(current.fulfillmentStatus)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "This order has already been updated — please refresh and try again.",
+      );
+    }
+    if (current.assignedDeliveryPersonId === deliveryPersonId) {
+      // Already assigned to this same person — nothing to do, and not an
+      // error (the UI may call this idempotently after a retry/race).
+      return;
+    }
+    const eventStatus = current.assignedDeliveryPersonId ? "driver_reassigned" : "driver_assigned";
+    tx.update(orderRef, {
+      assignedDeliveryPersonId: deliveryPersonId,
+      assignedDeliveryPersonName: driverName,
+      assignedAt: admin.firestore.FieldValue.serverTimestamp(),
+      fulfillmentStatusHistory: admin.firestore.FieldValue.arrayUnion({
+        status: eventStatus,
+        at: admin.firestore.Timestamp.now(),
+        byUid: request.auth.uid,
+        byName: actorName || "",
+        driverId: deliveryPersonId,
+        driverName,
+      }),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  return { orderId: orderRef.id, assignedDeliveryPersonId: deliveryPersonId, assignedDeliveryPersonName: driverName };
+});
+
 // Exported for focused unit testing, same convention as
 // marketplaceCheckout.js's own exports at the bottom of that file.
 exports.authorizePharmacyStaff = authorizePharmacyStaff;

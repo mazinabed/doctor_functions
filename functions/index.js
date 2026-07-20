@@ -2297,6 +2297,7 @@ const {
   markPharmacyOrderReadyForPickup,
   markPharmacyOrderOutForDelivery,
   markPharmacyOrderCompleted,
+  assignPharmacyOrderDeliveryPerson,
 } = require("./commerce/pharmacyOrderActions");
 exports.acceptPharmacyOrder = acceptPharmacyOrder;
 exports.rejectPharmacyOrder = rejectPharmacyOrder;
@@ -2304,3 +2305,7 @@ exports.startPharmacyOrderPreparation = startPharmacyOrderPreparation;
 exports.markPharmacyOrderReadyForPickup = markPharmacyOrderReadyForPickup;
 exports.markPharmacyOrderOutForDelivery = markPharmacyOrderOutForDelivery;
 exports.markPharmacyOrderCompleted = markPharmacyOrderCompleted;
+// Milestone 7 (Simple Delivery Management) — assign/reassign a Delivery
+// Personnel record to an order; order metadata only, never touches
+// fulfillmentStatus (see pharmacyOrderActions.js's own header comment).
+exports.assignPharmacyOrderDeliveryPerson = assignPharmacyOrderDeliveryPerson;

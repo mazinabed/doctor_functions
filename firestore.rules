@@ -2350,6 +2350,39 @@ service cloud.firestore {
               && resource.data.get('uid', '') != request.auth.uid
               && resource.data.get('role', '') != 'pharmacy_admin');
       }
+
+      // ── pharmacy_providers/{pharmacyId}/delivery_personnel/{id} ───────────
+      //
+      // Milestone 7 (Simple Delivery Management). Internal operational
+      // records only — NOT TrustyDr users. No login, no invitation, no auth,
+      // no permissions of their own. Owned entirely by the pharmacy, same
+      // tenant-isolation shape as pharmacy_members immediately above, but
+      // with no self-membership/invitation concept (there is no account to
+      // invite) and no delete (soft-deactivate via status, mirrors
+      // services' "never hard-delete" convention above).
+      //
+      // completedDeliveries/failedDeliveries are maintained by Cloud
+      // Functions (Admin SDK, bypasses these rules) as orders are
+      // completed/failed — excluded from the client-writable field list so a
+      // client write can never forge delivery history counters.
+      match /delivery_personnel/{deliveryPersonId} {
+        allow read: if isSignedIn()
+          && (isPharmacyMember(uid) || isPharmacyOwner(uid) || isAdmin());
+
+        allow create: if isSignedIn()
+          && (isPharmacyOwner(uid) || isPharmacyAdminMember(uid))
+          && request.resource.data.get('completedDeliveries', 0) == 0
+          && request.resource.data.get('failedDeliveries', 0) == 0;
+
+        allow update: if isSignedIn()
+          && (isPharmacyOwner(uid) || isPharmacyAdminMember(uid))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'name', 'phone', 'nationalId', 'vehicleType', 'vehiclePlate',
+               'status', 'notes', 'photoUrl', 'updatedAt', 'updatedBy'
+             ]);
+
+        allow delete: if false;
+      }
     }
 
 
