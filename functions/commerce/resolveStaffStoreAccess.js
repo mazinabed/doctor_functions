@@ -159,12 +159,20 @@ exports.resolveStaffStoreAccess = onRequest(
         role: data.role || null,
         // Checkpoint 4 (2026-07-19) — the explicit Store Role the owner/
         // manager picked in the Add/Edit Staff sheet (store_manager/
-        // pharmacist/inventory_staff/sales_order_staff), replacing the old
-        // Odoo-module checkboxes as the source Commerce maps to a role
-        // template from. Commerce re-validates this string against its own
-        // canonical template list before ever using it — never trusted
-        // blindly just because it came from this bridge.
+        // pharmacist/inventory_staff/sales_order_staff). Superseded by
+        // storeCommercePermissions below as the primary signal, kept as a
+        // compatibility fallback. Commerce re-validates this string against
+        // its own canonical template list before ever using it — never
+        // trusted blindly just because it came from this bridge.
         storeRoleTemplate: data.storeRoleTemplate || null,
+        // Unified Staff Sheet correction (2026-07-19) — the explicit Store
+        // Permission checkbox keys chosen in the unified Add/Edit Staff
+        // sheet. `null` (not `[]`) when the field was never set at all, so
+        // Commerce can tell "record predates this field" apart from "owner
+        // explicitly selected nothing."
+        storeCommercePermissions: Array.isArray(data.storeCommercePermissions)
+          ? data.storeCommercePermissions
+          : null,
         storePermissions,
         pharmacyCommerceSubscriptionStatus,
         pharmacyCommerceTrialEnds,

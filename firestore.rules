@@ -2322,7 +2322,21 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                'role', 'permissions', 'isActive', 'displayName',
                'updatedAt', 'updatedBy',
-               'reactivatedBy', 'reactivatedAt', 'deactivatedBy', 'deactivatedAt'
+               'reactivatedBy', 'reactivatedAt', 'deactivatedBy', 'deactivatedAt',
+               // Unified Staff Sheet correction (2026-07-19) — Commerce Store
+               // Permission checkbox keys (StorePermissionCheckbox.* in
+               // doctor_portal), read by Commerce via resolveStaffStoreAccess.
+               // This field never grants anything by itself: Commerce
+               // independently caps whatever it resolves here against the
+               // ACTING user's own current Commerce permissions before ever
+               // assigning a role (see syncPharmacyStaffOdooAccess), so a
+               // scoped admin writing this field can never cause a staff
+               // member to end up with more Commerce access than the admin
+               // themselves currently has. storeRoleTemplate (superseded,
+               // Checkpoint 4) is deliberately NOT re-added here — the new
+               // UI never writes it, and any already-set legacy value is
+               // only ever read, never updated, through this path.
+               'storeCommercePermissions'
              ]);
 
         // UPDATE path 2: Pharmacy owner or global admin — unrestricted.
