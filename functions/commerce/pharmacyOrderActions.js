@@ -124,7 +124,7 @@ async function authorizePharmacyStaff(db, callerUid, pharmacyOwnerUid, requiredP
 async function applyFulfillmentTransition(
   db,
   orderRef,
-  { fromStatuses, toStatus, actorUid, actorName, saleOrderState, pickingState },
+  { fromStatuses, toStatus, actorUid, actorName, saleOrderState, pickingState, extraWrites },
 ) {
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(orderRef);
@@ -151,6 +151,12 @@ async function applyFulfillmentTransition(
     if (saleOrderState !== undefined) update.saleOrderState = saleOrderState;
     if (pickingState !== undefined) update.pickingState = pickingState;
     tx.update(orderRef, update);
+    // Milestone 7 — optional same-transaction side write (e.g. incrementing
+    // a Delivery Person's completedDeliveries counter). Every existing
+    // caller omits this and is completely unaffected.
+    if (typeof extraWrites === "function") {
+      extraWrites(tx, data);
+    }
   });
 }
 
@@ -402,9 +408,138 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
     actorName,
     saleOrderState: result.data.saleOrderState,
     pickingState: result.data.pickingState,
+    // Milestone 7 — mirrors markPharmacyOrderDeliveryFailed's own
+    // failedDeliveries increment, for counter consistency: whichever
+    // terminal outcome an assigned delivery reaches, the Delivery Person's
+    // history counters stay in sync with it, in the same transaction as
+    // the status write (never a separate, racy follow-up write).
+    extraWrites: (tx, current) => {
+      if (current.assignedDeliveryPersonId) {
+        const personRef = db
+          .collection("pharmacy_providers")
+          .doc(current.pharmacyOwnerUid)
+          .collection("delivery_personnel")
+          .doc(current.assignedDeliveryPersonId);
+        tx.set(
+          personRef,
+          {
+            completedDeliveries: admin.firestore.FieldValue.increment(1),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+    },
   });
 
   return { orderId: orderRef.id, fulfillmentStatus: "completed" };
+});
+
+// ─── Mark Delivery Failed ───────────────────────────────────────────────────
+// Milestone 7 (Simple Delivery Management). A genuine new terminal outcome —
+// deliberately NOT folded into 'cancelled' (that means the pharmacy/patient
+// cancelled before fulfillment; a failed delivery means the pharmacy
+// actually attempted delivery and the courier could not complete it — a
+// materially different operational event worth its own bucket in Reports
+// and its own value here). Only reachable from 'outForDelivery' — pickup
+// orders have no delivery leg to fail, and this must never be usable as a
+// side-door out of 'preparing'/'readyForPickup'.
+//
+// No Odoo write here (same as Accept/Ready/Out for Delivery — a Healthcare-
+// side-only outcome), but still re-verifies the order is genuinely still
+// live in Odoo first (never a blind trust of the cached projection),
+// mirroring every other action in this file. What (if anything) should
+// happen to the underlying Odoo sale order on a failed delivery — restock,
+// refund, redeliver — is explicitly out of scope for V1 (would require
+// exactly the failure-reason taxonomy the product spec says not to build
+// yet); this function only records the operational outcome.
+exports.markPharmacyOrderDeliveryFailed = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "You must be signed in.");
+  }
+  const db = admin.firestore();
+  const { orderId, note } = request.data || {};
+  const { orderRef, data } = await loadOrderForAction(db, orderId);
+  const { actorName } = await authorizePharmacyStaff(
+    db,
+    request.auth.uid,
+    data.pharmacyOwnerUid,
+    "orders_fulfillment",
+  );
+
+  const isDelivery = data.deliveryCarrierEngineId != null;
+  if (!isDelivery) {
+    throw new HttpsError("failed-precondition", "This is a pickup order and has no delivery to fail.");
+  }
+  if (data.fulfillmentStatus !== "outForDelivery") {
+    throw new HttpsError("failed-precondition", "This order is not out for delivery.");
+  }
+  const engineId = requireLinkedOdooOrder(data);
+
+  const statusResult = await callCommerce("getMarketplaceOrderStatusForHealthcare", { engineId });
+  if (!statusResult.ok) {
+    throw new HttpsError("internal", "Could not verify the order with the store system. Please try again.");
+  }
+  if (statusResult.data.state !== "sale") {
+    throw new HttpsError("failed-precondition", "This order is no longer active in the store system.");
+  }
+
+  // Optional free-text note (V1: no failure-reason taxonomy) — capped
+  // defensively so a runaway client value can never bloat the history array.
+  const trimmedNote = typeof note === "string" ? note.trim().slice(0, 500) : "";
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(orderRef);
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "Order not found.");
+    }
+    const current = snap.data();
+    if (current.fulfillmentStatus !== "outForDelivery") {
+      throw new HttpsError(
+        "failed-precondition",
+        "This order has already been updated — please refresh and try again.",
+      );
+    }
+
+    tx.update(orderRef, {
+      fulfillmentStatus: "deliveryFailed",
+      fulfillmentStatusHistory: admin.firestore.FieldValue.arrayUnion({
+        status: "deliveryFailed",
+        at: admin.firestore.Timestamp.now(),
+        byUid: request.auth.uid,
+        byName: actorName || "",
+        ...(trimmedNote ? { note: trimmedNote } : {}),
+      }),
+      saleOrderState: statusResult.data.state,
+      pickingState: statusResult.data.pickingState,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Preserves assignedDeliveryPersonId/Name on the order (never cleared —
+    // "who was assigned when it failed" stays part of the record) and
+    // increments that person's failedDeliveries counter transactionally.
+    // set(..., {merge:true}) rather than update() — the personnel record is
+    // never hard-deleted (firestore.rules: allow delete: if false) so this
+    // should always target a real doc, but merge-set costs nothing extra
+    // and can never abort the whole transaction on a NOT_FOUND.
+    if (current.assignedDeliveryPersonId) {
+      const personRef = db
+        .collection("pharmacy_providers")
+        .doc(current.pharmacyOwnerUid)
+        .collection("delivery_personnel")
+        .doc(current.assignedDeliveryPersonId);
+      tx.set(
+        personRef,
+        {
+          failedDeliveries: admin.firestore.FieldValue.increment(1),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+  });
+
+  return { orderId: orderRef.id, fulfillmentStatus: "deliveryFailed" };
 });
 
 // ─── Assign / Reassign Delivery Person ──────────────────────────────────────
@@ -436,9 +571,18 @@ exports.assignPharmacyOrderDeliveryPerson = onCall({ region: "us-central1" }, as
     "orders_fulfillment",
   );
 
+  // Pickup orders have no delivery leg — a Delivery Person only makes sense
+  // for Home Delivery orders. The Flutter picker already hides itself for
+  // pickup orders; this is the server-side guard behind it.
+  const isDelivery = data.deliveryCarrierEngineId != null;
+  if (!isDelivery) {
+    throw new HttpsError("failed-precondition", "This is a pickup order and cannot be assigned a delivery person.");
+  }
+
   // Assignment only makes sense before delivery has concluded — mirrors the
   // "before delivery is completed" bound the product spec calls out
-  // explicitly for reassignment.
+  // explicitly for reassignment. 'completed'/'deliveryFailed' (and any
+  // earlier/other terminal status) are deliberately excluded.
   const assignableStatuses = ["accepted", "preparing", "readyForPickup", "outForDelivery"];
   if (!assignableStatuses.includes(data.fulfillmentStatus)) {
     throw new HttpsError("failed-precondition", "This order can no longer be assigned a delivery person.");

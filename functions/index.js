@@ -2298,6 +2298,7 @@ const {
   markPharmacyOrderOutForDelivery,
   markPharmacyOrderCompleted,
   assignPharmacyOrderDeliveryPerson,
+  markPharmacyOrderDeliveryFailed,
 } = require("./commerce/pharmacyOrderActions");
 exports.acceptPharmacyOrder = acceptPharmacyOrder;
 exports.rejectPharmacyOrder = rejectPharmacyOrder;
@@ -2309,3 +2310,7 @@ exports.markPharmacyOrderCompleted = markPharmacyOrderCompleted;
 // Personnel record to an order; order metadata only, never touches
 // fulfillmentStatus (see pharmacyOrderActions.js's own header comment).
 exports.assignPharmacyOrderDeliveryPerson = assignPharmacyOrderDeliveryPerson;
+// New terminal outcome (outForDelivery -> deliveryFailed), deliberately
+// distinct from 'cancelled' — see pharmacyOrderActions.js's own header
+// comment on markPharmacyOrderDeliveryFailed.
+exports.markPharmacyOrderDeliveryFailed = markPharmacyOrderDeliveryFailed;
