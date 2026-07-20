@@ -614,6 +614,15 @@
         { "fieldPath": "fulfillmentStatus", "order": "ASCENDING" },
         { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "marketplace_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "pharmacyOwnerUid", "order": "ASCENDING" },
+        { "fieldPath": "assignedDeliveryPersonId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
