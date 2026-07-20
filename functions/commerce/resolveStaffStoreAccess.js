@@ -157,6 +157,14 @@ exports.resolveStaffStoreAccess = onRequest(
         // otherwise sensitive field, and Commerce already reads this same
         // member document's storePermissions above.
         role: data.role || null,
+        // Checkpoint 4 (2026-07-19) — the explicit Store Role the owner/
+        // manager picked in the Add/Edit Staff sheet (store_manager/
+        // pharmacist/inventory_staff/sales_order_staff), replacing the old
+        // Odoo-module checkboxes as the source Commerce maps to a role
+        // template from. Commerce re-validates this string against its own
+        // canonical template list before ever using it — never trusted
+        // blindly just because it came from this bridge.
+        storeRoleTemplate: data.storeRoleTemplate || null,
         storePermissions,
         pharmacyCommerceSubscriptionStatus,
         pharmacyCommerceTrialEnds,
