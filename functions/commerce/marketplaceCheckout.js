@@ -132,30 +132,21 @@ async function resolveCommerceSubscriptionStatus(db, orgId) {
   return centerSnap.data().commerceSubscriptionStatus || null;
 }
 
-// TEMP DIAGNOSTIC (placeMarketplaceOrder silent-failure investigation,
-// 2026-07-21) — structured logs at every checkpoint firebase-functions/
-// logger (not raw console.*) actually renders content for in
-// `firebase functions:log`, per the 10-point checklist requested. No
-// patient-identifying data: the request body may contain patientName/
-// patientPhone/deliveryAddress, so this logs the URL/endpoint/status/
-// shape only, never the body itself. Remove once the silent-failure cause
-// is confirmed live.
-const commerceUrl = `${COMMERCE_BASE_URL}`;
-logger.info("diag.callCommerce.module_loaded", { commerceUrl });
-
+// Structured failure logging (permanent) — a network/parse failure reaching
+// Commerce is rare and always worth full detail, unlike a per-call success
+// trace. error.cause (Node's native fetch/undici nests ECONNREFUSED/
+// ENOTFOUND/ETIMEDOUT etc. there) is preserved explicitly — the previous
+// unstructured `console.error(string, err)` here lost it in practice.
 async function callCommerce(endpoint, body) {
   const url = `${COMMERCE_BASE_URL}/${endpoint}`;
-  logger.info("diag.callCommerce.commerce_url", { endpoint, url });
 
   let response;
   try {
-    logger.info("diag.callCommerce.sending_request", { endpoint, url, method: "POST" });
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    logger.info("diag.callCommerce.http_status", { endpoint, status: response.status, ok: response.ok });
   } catch (err) {
     logger.error("placeMarketplaceOrder failed", {
       error: String(err),
@@ -171,11 +162,6 @@ async function callCommerce(endpoint, body) {
   let data;
   try {
     data = await response.json();
-    logger.info("diag.callCommerce.response_body", {
-      endpoint,
-      status: response.status,
-      bodyKeys: data && typeof data === "object" ? Object.keys(data) : typeof data,
-    });
   } catch (err) {
     logger.error("placeMarketplaceOrder failed", {
       error: String(err),
@@ -188,7 +174,6 @@ async function callCommerce(endpoint, body) {
     });
     throw new HttpsError("internal", "Commerce Bridge returned an unreadable response.");
   }
-  logger.info("diag.callCommerce.parsed_response", { endpoint, ok: response.ok, status: response.status });
   return { ok: response.ok, status: response.status, data };
 }
 
@@ -228,15 +213,14 @@ exports.getMarketplaceCheckoutProfile = onCall({ region: "us-central1" }, async 
   };
 });
 
-// TEMP DIAGNOSTIC (placeMarketplaceOrder silent-failure investigation,
-// 2026-07-21) — every throw in placeMarketplaceOrder now routes through
-// this so a "placeMarketplaceOrder failed" entry is guaranteed to exist
-// before the client ever sees the HttpsError, matching item 4's exact
-// requested shape. `err` is only present for genuinely caught exceptions
-// (there are none directly in this function today — see callCommerce's own
-// two catch blocks — but this stays ready for that shape regardless of
-// which throw site is hit). `where` tags the exact call site so the log
-// alone answers "exact failing line" without needing a stack trace.
+// Structured failure logging (permanent) — every throw in placeMarketplaceOrder
+// routes through this so a "placeMarketplaceOrder failed" entry always
+// exists before the client ever sees the HttpsError (a deliberately-thrown
+// HttpsError is a normal rejection to Firebase's onCall wrapper, not a
+// crash, so it is never auto-logged otherwise). `err` is only present for
+// genuinely caught exceptions (see callCommerce's own two catch blocks);
+// `where` tags the exact call site so the log alone answers "which line
+// rejected this request" without needing a stack trace.
 function throwLogged(where, code, message, details, err) {
   logger.error("placeMarketplaceOrder failed", {
     error: err ? String(err) : message,
@@ -251,11 +235,6 @@ function throwLogged(where, code, message, details, err) {
 }
 
 exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request) => {
-  logger.info("diag.placeMarketplaceOrder.start", {
-    hasAuth: !!request.auth,
-    dataKeys: request.data ? Object.keys(request.data) : [],
-  });
-
   if (!request.auth) {
     throwLogged("auth_check", "unauthenticated", "You must be signed in to place an order.");
   }
@@ -326,12 +305,6 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
   const patientProfileSnap = await db.collection("users").doc(patientId).get();
   const patientProfile = patientProfileSnap.exists ? patientProfileSnap.data() : {};
   const resolvedName = typeof patientProfile.name === "string" ? patientProfile.name.trim() : "";
-  // "access context resolved" checkpoint — booleans only, never the actual
-  // name/phone (patient-sensitive).
-  logger.info("diag.placeMarketplaceOrder.access_context_resolved", {
-    patientProfileExists: patientProfileSnap.exists,
-    hasResolvedName: !!resolvedName,
-  });
   if (!resolvedName) {
     throwLogged(
       "resolve_patient_name",
@@ -349,13 +322,6 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
   // an idempotency slot or calling Commerce at all: a non-operational store
   // must fail fast and cheap, never consume a real idempotency attempt.
   const commerceSubscriptionStatus = await resolveCommerceSubscriptionStatus(db, orgId);
-  // "pharmacy resolved" checkpoint.
-  logger.info("diag.placeMarketplaceOrder.pharmacy_resolved", {
-    orgId,
-    pharmacyOwnerUid: pharmacyOwnerUidFromOrgId(orgId),
-    commerceSubscriptionStatus,
-    operational: isCommerceBillingOperational(commerceSubscriptionStatus),
-  });
   if (!isCommerceBillingOperational(commerceSubscriptionStatus)) {
     throwLogged(
       "billing_gate",
@@ -441,11 +407,6 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
 
   if (!shouldCallCommerce) {
     const existing = (await orderRef.get()).data();
-    logger.info("diag.placeMarketplaceOrder.returning_success", {
-      orderId: idempotencyKey,
-      path: "idempotent_replay",
-      hasOrder: !!existing.order,
-    });
     return { orderId: idempotencyKey, order: existing.order };
   }
 
@@ -465,16 +426,6 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     // a billing-status change in the narrow window between the two reads.
     pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
   };
-  // "request payload built" checkpoint — shape only, never patientName/
-  // patientPhone/deliveryAddress (patient-sensitive).
-  logger.info("diag.placeMarketplaceOrder.request_payload_built", {
-    orgId,
-    idempotencyKey,
-    lineCount: lines.length,
-    hasDeliveryCarrier: !!deliveryCarrierEngineId,
-    lang: commercePayload.lang || null,
-    pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
-  });
 
   const result = await callCommerce("placeMarketplaceOrderForHealthcare", commercePayload);
 
@@ -535,11 +486,6 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
-  logger.info("diag.placeMarketplaceOrder.returning_success", {
-    orderId: idempotencyKey,
-    path: "new_order",
-    odooEngineId: (result.data.order && result.data.order.engineId) || null,
-  });
   return { orderId: idempotencyKey, order: result.data.order };
 });
 
