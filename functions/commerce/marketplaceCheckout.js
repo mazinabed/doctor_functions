@@ -62,6 +62,7 @@
 // read Healthcare's own Firestore, never Commerce's.
 
 const { HttpsError, onCall } = require("firebase-functions/v2/https");
+const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
 
@@ -131,25 +132,63 @@ async function resolveCommerceSubscriptionStatus(db, orgId) {
   return centerSnap.data().commerceSubscriptionStatus || null;
 }
 
+// TEMP DIAGNOSTIC (placeMarketplaceOrder silent-failure investigation,
+// 2026-07-21) — structured logs at every checkpoint firebase-functions/
+// logger (not raw console.*) actually renders content for in
+// `firebase functions:log`, per the 10-point checklist requested. No
+// patient-identifying data: the request body may contain patientName/
+// patientPhone/deliveryAddress, so this logs the URL/endpoint/status/
+// shape only, never the body itself. Remove once the silent-failure cause
+// is confirmed live.
+const commerceUrl = `${COMMERCE_BASE_URL}`;
+logger.info("diag.callCommerce.module_loaded", { commerceUrl });
+
 async function callCommerce(endpoint, body) {
+  const url = `${COMMERCE_BASE_URL}/${endpoint}`;
+  logger.info("diag.callCommerce.commerce_url", { endpoint, url });
+
   let response;
   try {
-    response = await fetch(`${COMMERCE_BASE_URL}/${endpoint}`, {
+    logger.info("diag.callCommerce.sending_request", { endpoint, url, method: "POST" });
+    response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    logger.info("diag.callCommerce.http_status", { endpoint, status: response.status, ok: response.ok });
   } catch (err) {
-    console.error(`[marketplaceCheckout] network error reaching ${endpoint}:`, err);
+    logger.error("placeMarketplaceOrder failed", {
+      error: String(err),
+      stack: err && err.stack,
+      message: err && err.message,
+      cause: err && err.cause,
+      where: "callCommerce.fetch",
+      endpoint,
+      url,
+    });
     throw new HttpsError("internal", "Could not reach the Commerce Bridge.");
   }
   let data;
   try {
     data = await response.json();
+    logger.info("diag.callCommerce.response_body", {
+      endpoint,
+      status: response.status,
+      bodyKeys: data && typeof data === "object" ? Object.keys(data) : typeof data,
+    });
   } catch (err) {
-    console.error(`[marketplaceCheckout] could not parse ${endpoint} response:`, err);
+    logger.error("placeMarketplaceOrder failed", {
+      error: String(err),
+      stack: err && err.stack,
+      message: err && err.message,
+      cause: err && err.cause,
+      where: "callCommerce.json_parse",
+      endpoint,
+      status: response.status,
+    });
     throw new HttpsError("internal", "Commerce Bridge returned an unreadable response.");
   }
+  logger.info("diag.callCommerce.parsed_response", { endpoint, ok: response.ok, status: response.status });
   return { ok: response.ok, status: response.status, data };
 }
 
@@ -189,9 +228,36 @@ exports.getMarketplaceCheckoutProfile = onCall({ region: "us-central1" }, async 
   };
 });
 
+// TEMP DIAGNOSTIC (placeMarketplaceOrder silent-failure investigation,
+// 2026-07-21) — every throw in placeMarketplaceOrder now routes through
+// this so a "placeMarketplaceOrder failed" entry is guaranteed to exist
+// before the client ever sees the HttpsError, matching item 4's exact
+// requested shape. `err` is only present for genuinely caught exceptions
+// (there are none directly in this function today — see callCommerce's own
+// two catch blocks — but this stays ready for that shape regardless of
+// which throw site is hit). `where` tags the exact call site so the log
+// alone answers "exact failing line" without needing a stack trace.
+function throwLogged(where, code, message, details, err) {
+  logger.error("placeMarketplaceOrder failed", {
+    error: err ? String(err) : message,
+    stack: err ? err.stack : new Error(message).stack,
+    message,
+    cause: err && err.cause ? String(err.cause) : null,
+    where,
+    code,
+    details: details || null,
+  });
+  throw new HttpsError(code, message, details);
+}
+
 exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request) => {
+  logger.info("diag.placeMarketplaceOrder.start", {
+    hasAuth: !!request.auth,
+    dataKeys: request.data ? Object.keys(request.data) : [],
+  });
+
   if (!request.auth) {
-    throw new HttpsError("unauthenticated", "You must be signed in to place an order.");
+    throwLogged("auth_check", "unauthenticated", "You must be signed in to place an order.");
   }
   const patientId = request.auth.uid;
 
@@ -214,15 +280,19 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     !Array.isArray(lines) ||
     lines.length === 0
   ) {
-    throw new HttpsError(
+    throwLogged(
+      "validate_request_shape",
       "invalid-argument",
       "orgId, idempotencyKey, and a non-empty lines array are required.",
+      { orgId: orgId || null, hasIdempotencyKey: !!idempotencyKey, lineCount: Array.isArray(lines) ? lines.length : null },
     );
   }
   if (lines.some((l) => !l || !l.productEngineId || !(Number(l.quantity) > 0))) {
-    throw new HttpsError(
+    throwLogged(
+      "validate_lines",
       "invalid-argument",
       "Every line requires a productEngineId and a positive quantity.",
+      { lineCount: lines.length },
     );
   }
   if (deliveryCarrierEngineId) {
@@ -234,9 +304,11 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
       !addr.city ||
       !addr.full
     ) {
-      throw new HttpsError(
+      throwLogged(
+        "validate_delivery_address",
         "invalid-argument",
         "A delivery address (province, city, and full address) is required for home delivery.",
+        { deliveryCarrierEngineId, hasAddress: !!addr },
       );
     }
   }
@@ -254,10 +326,18 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
   const patientProfileSnap = await db.collection("users").doc(patientId).get();
   const patientProfile = patientProfileSnap.exists ? patientProfileSnap.data() : {};
   const resolvedName = typeof patientProfile.name === "string" ? patientProfile.name.trim() : "";
+  // "access context resolved" checkpoint — booleans only, never the actual
+  // name/phone (patient-sensitive).
+  logger.info("diag.placeMarketplaceOrder.access_context_resolved", {
+    patientProfileExists: patientProfileSnap.exists,
+    hasResolvedName: !!resolvedName,
+  });
   if (!resolvedName) {
-    throw new HttpsError(
+    throwLogged(
+      "resolve_patient_name",
       "failed-precondition",
       "Please complete your profile name before placing an order.",
+      { patientProfileExists: patientProfileSnap.exists },
     );
   }
   const resolvedPhone =
@@ -269,10 +349,20 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
   // an idempotency slot or calling Commerce at all: a non-operational store
   // must fail fast and cheap, never consume a real idempotency attempt.
   const commerceSubscriptionStatus = await resolveCommerceSubscriptionStatus(db, orgId);
+  // "pharmacy resolved" checkpoint.
+  logger.info("diag.placeMarketplaceOrder.pharmacy_resolved", {
+    orgId,
+    pharmacyOwnerUid: pharmacyOwnerUidFromOrgId(orgId),
+    commerceSubscriptionStatus,
+    operational: isCommerceBillingOperational(commerceSubscriptionStatus),
+  });
   if (!isCommerceBillingOperational(commerceSubscriptionStatus)) {
-    throw new HttpsError("failed-precondition", "This store is not currently available for orders.", {
-      code: "store_unavailable",
-    });
+    throwLogged(
+      "billing_gate",
+      "failed-precondition",
+      "This store is not currently available for orders.",
+      { code: "store_unavailable", orgId, commerceSubscriptionStatus },
+    );
   }
 
   const orderRef = db.collection("marketplace_orders").doc(idempotencyKey);
@@ -329,11 +419,21 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     }
     const data = snap.data();
     if (data.patientId !== patientId) {
-      throw new HttpsError("permission-denied", "This order reference does not belong to you.");
+      throwLogged(
+        "idempotency_key_owner_mismatch",
+        "permission-denied",
+        "This order reference does not belong to you.",
+        { idempotencyKey },
+      );
     }
     if (data.status === "confirmed") return false;
     if (data.status === "pending") {
-      throw new HttpsError("already-exists", "This order is already being processed.");
+      throwLogged(
+        "idempotency_key_already_pending",
+        "already-exists",
+        "This order is already being processed.",
+        { idempotencyKey },
+      );
     }
     tx.update(orderRef, { status: "pending", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     return true;
@@ -341,10 +441,15 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
 
   if (!shouldCallCommerce) {
     const existing = (await orderRef.get()).data();
+    logger.info("diag.placeMarketplaceOrder.returning_success", {
+      orderId: idempotencyKey,
+      path: "idempotent_replay",
+      hasOrder: !!existing.order,
+    });
     return { orderId: idempotencyKey, order: existing.order };
   }
 
-  const result = await callCommerce("placeMarketplaceOrderForHealthcare", {
+  const commercePayload = {
     orgId,
     patientRef: patientId,
     patientName: resolvedName,
@@ -359,32 +464,52 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     // trust this bridge's fail-fast check alone — defense in depth against
     // a billing-status change in the narrow window between the two reads.
     pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
+  };
+  // "request payload built" checkpoint — shape only, never patientName/
+  // patientPhone/deliveryAddress (patient-sensitive).
+  logger.info("diag.placeMarketplaceOrder.request_payload_built", {
+    orgId,
+    idempotencyKey,
+    lineCount: lines.length,
+    hasDeliveryCarrier: !!deliveryCarrierEngineId,
+    lang: commercePayload.lang || null,
+    pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
   });
+
+  const result = await callCommerce("placeMarketplaceOrderForHealthcare", commercePayload);
 
   if (!result.ok) {
     await orderRef.update({ status: "failed", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     if (result.status === 409) {
-      throw new HttpsError(
+      throwLogged(
+        "commerce_409_unavailable",
         "failed-precondition",
         result.data.error || "Some items are no longer available.",
         { unavailable: result.data.unavailable || [] },
       );
     }
     if (result.status === 403) {
-      throw new HttpsError(
+      throwLogged(
+        "commerce_403_store_unavailable",
         "failed-precondition",
         result.data.message || "This store is not currently available for orders.",
         { code: "store_unavailable" },
       );
     }
     if (result.status === 400 && result.data.error === "delivery_address_required") {
-      throw new HttpsError(
+      throwLogged(
+        "commerce_400_delivery_address_required",
         "invalid-argument",
         result.data.message || "A delivery address is required for home delivery.",
         { code: "delivery_address_required" },
       );
     }
-    throw new HttpsError("internal", result.data.error || "Could not place the order. Please try again.");
+    throwLogged(
+      "commerce_unhandled_error_status",
+      "internal",
+      result.data.error || "Could not place the order. Please try again.",
+      { status: result.status, dataError: result.data.error || null },
+    );
   }
 
   // Pharmacy Operations Dashboard (Phase 1) — the order only becomes
@@ -410,6 +535,11 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
+  logger.info("diag.placeMarketplaceOrder.returning_success", {
+    orderId: idempotencyKey,
+    path: "new_order",
+    odooEngineId: (result.data.order && result.data.order.engineId) || null,
+  });
   return { orderId: idempotencyKey, order: result.data.order };
 });
 
