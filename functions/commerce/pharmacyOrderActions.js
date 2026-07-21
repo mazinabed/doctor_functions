@@ -1,8 +1,8 @@
 'use strict';
 
 // Pharmacy Operations Dashboard — Phase 1, Increment 2 (Accept, Reject,
-// Start Preparing, Mark Ready for Pickup / Out for Delivery, Mark
-// Completed).
+// Start Preparing, Mark Ready for Pickup / Ready for Delivery / Out for
+// Delivery, Mark Completed).
 //
 // Every action follows the SAME required flow, no exceptions:
 //   Pharmacy Dashboard -> this file (authenticated Healthcare bridge) ->
@@ -16,16 +16,26 @@
 // write at all if Odoo didn't confirm.
 //
 // Odoo has no native "pharmacy accepted this order" or "ready for
-// pickup"/"out for delivery" concept (see pharmacy_order_status.dart's own
-// mapping table in doctor_portal for the full state design). Only 3 of the
-// 6 actions here make a real Odoo write:
+// pickup/delivery"/"out for delivery" concept (see pharmacy_order_status.dart's
+// own mapping table in doctor_portal for the full state design). Only 3 of
+// the actions here make a real Odoo write:
 //   - rejectPharmacyOrder            -> reuses cancelMarketplaceOrderForHealthcare
 //   - startPharmacyOrderPreparation  -> startOrderPreparationForHealthcare (action_assign)
 //   - markPharmacyOrderCompleted     -> completeOrderFulfillmentForHealthcare (button_validate)
-// The other 3 (accept, markReadyForPickup, markOutForDelivery) are
-// Healthcare-side flips gated on a live READ-ONLY re-check
-// (getMarketplaceOrderStatusForHealthcare) — never a blind trust of the
-// cached Firestore projection.
+// The others (accept, markReadyForPickup, markReadyForDelivery,
+// markOutForDelivery) are Healthcare-side flips gated on a live READ-ONLY
+// re-check (getMarketplaceOrderStatusForHealthcare) — never a blind trust
+// of the cached Firestore projection.
+//
+// Workflow refinement (2026-07-20): delivery orders now pass through a
+// distinct 'readyForDelivery' stage between 'preparing' and 'outForDelivery'
+// (pharmacies prepare first, THEN decide/dispatch — driver assignment was
+// already allowed this early and remains so; only the hard "must have a
+// valid driver" gate is tied to the readyForDelivery -> outForDelivery leg).
+// Completion (markPharmacyOrderCompleted) now always requires a payment
+// disposition in the same transaction as the status write — "Completed"
+// means both handed over AND payment accounted for, for pickup and
+// delivery alike.
 
 const { HttpsError, onCall } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
@@ -351,12 +361,22 @@ async function requireAssignedDeliveryPerson(db, pharmacyOwnerUid, assignedDeliv
   }
 }
 
-// ─── Mark Ready for Pickup / Mark Out for Delivery ─────────────────────────
+// ─── Mark Ready for Pickup / Ready for Delivery / Out for Delivery ─────────
 // Same underlying Odoo signal ('assigned' picking state IS "ready" — no
-// separate Odoo state exists for the two) — read-only re-verified live,
-// distinguished only by isDelivery, which the caller must match or the
-// action is rejected outright (never silently relabeled).
-async function markReadyOrOutForDelivery(request, { expectedIsDelivery, toStatus, wrongTypeMessage }) {
+// separate Odoo state exists for any of the three) — read-only re-verified
+// live every time, distinguished by isDelivery (which the caller must match
+// or the action is rejected outright, never silently relabeled) and by
+// [fromStatus], the exact fulfillmentStatus this specific transition must
+// start from. Workflow refinement (2026-07-20): delivery orders now pass
+// through 'preparing' -> 'readyForDelivery' -> 'outForDelivery' (previously
+// 'preparing' -> 'outForDelivery' directly) — [requireDriver] is only ever
+// true for the readyForDelivery -> outForDelivery leg, so preparing a
+// delivery order for dispatch never itself requires a driver (advance
+// assignment from 'accepted'/'preparing' remains fully allowed, unchanged).
+async function markReadyOrOutForDelivery(
+  request,
+  { expectedIsDelivery, fromStatus, toStatus, wrongTypeMessage, wrongStageMessage, requireDriver },
+) {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "You must be signed in.");
   }
@@ -373,14 +393,14 @@ async function markReadyOrOutForDelivery(request, { expectedIsDelivery, toStatus
   if (isDelivery !== expectedIsDelivery) {
     throw new HttpsError("failed-precondition", wrongTypeMessage);
   }
-  if (data.fulfillmentStatus !== "preparing") {
-    throw new HttpsError("failed-precondition", "This order is not in preparation.");
+  if (data.fulfillmentStatus !== fromStatus) {
+    throw new HttpsError("failed-precondition", wrongStageMessage);
   }
-  // Fail fast, before the Commerce round-trip, whenever this is the
-  // delivery leg (expectedIsDelivery) — pickup orders never reach this
-  // check. Re-validated again transactionally below (beforeWrite) to close
-  // the race between this check and the actual write.
-  if (expectedIsDelivery) {
+  // Fail fast, before the Commerce round-trip, whenever this specific leg
+  // requires a driver (only readyForDelivery -> outForDelivery today).
+  // Re-validated again transactionally below (beforeWrite) to close the
+  // race between this check and the actual write.
+  if (requireDriver) {
     await requireAssignedDeliveryPerson(db, data.pharmacyOwnerUid, data.assignedDeliveryPersonId);
   }
   const engineId = requireLinkedOdooOrder(data);
@@ -397,13 +417,13 @@ async function markReadyOrOutForDelivery(request, { expectedIsDelivery, toStatus
   }
 
   await applyFulfillmentTransition(db, orderRef, {
-    fromStatuses: ["preparing"],
+    fromStatuses: [fromStatus],
     toStatus,
     actorUid: request.auth.uid,
     actorName,
     saleOrderState: statusResult.data.state,
     pickingState: statusResult.data.pickingState,
-    beforeWrite: expectedIsDelivery
+    beforeWrite: requireDriver
       ? async (tx, current) => {
           const id = current.assignedDeliveryPersonId;
           if (!id || typeof id !== "string") {
@@ -437,18 +457,92 @@ async function markReadyOrOutForDelivery(request, { expectedIsDelivery, toStatus
 exports.markPharmacyOrderReadyForPickup = onCall({ region: "us-central1" }, (request) =>
   markReadyOrOutForDelivery(request, {
     expectedIsDelivery: false,
+    fromStatus: "preparing",
     toStatus: "readyForPickup",
-    wrongTypeMessage: 'This is a delivery order — use "Mark Out for Delivery" instead.',
+    wrongTypeMessage: 'This is a delivery order — use "Mark Ready for Delivery" instead.',
+    wrongStageMessage: "This order is not in preparation.",
+    requireDriver: false,
+  }),
+);
+
+exports.markPharmacyOrderReadyForDelivery = onCall({ region: "us-central1" }, (request) =>
+  markReadyOrOutForDelivery(request, {
+    expectedIsDelivery: true,
+    fromStatus: "preparing",
+    toStatus: "readyForDelivery",
+    wrongTypeMessage: 'This is a pickup order — use "Mark Ready for Pickup" instead.',
+    wrongStageMessage: "This order is not in preparation.",
+    requireDriver: false,
   }),
 );
 
 exports.markPharmacyOrderOutForDelivery = onCall({ region: "us-central1" }, (request) =>
   markReadyOrOutForDelivery(request, {
     expectedIsDelivery: true,
+    fromStatus: "readyForDelivery",
     toStatus: "outForDelivery",
     wrongTypeMessage: 'This is a pickup order — use "Mark Ready for Pickup" instead.',
+    wrongStageMessage: "This order is not ready for delivery yet.",
+    requireDriver: true,
   }),
 );
+
+// ─── Payment disposition (Completion gate) ─────────────────────────────────
+// Workflow refinement (2026-07-20): "Completed" now always means BOTH the
+// medication was handed over AND the pharmacy has recorded a payment
+// disposition — never a hardcoded "cash received" assumption, since a
+// pharmacy may collect cash, card, ZainCash, Qi Card, or (permission-
+// controlled, reusing the SAME orders_fulfillment gate this whole action
+// already requires — no new permission key invented for this) wave the
+// order as a no-charge/complimentary order. 'paid_online'/'insurance' are
+// explicitly future phases (per product spec) — PAYMENT_METHODS
+// intentionally omits them so submitting either is rejected outright
+// rather than silently accepted as a valid disposition today.
+const PAYMENT_METHODS = ["cash", "card", "zaincash", "qi", "no_charge"];
+
+function resolvePaymentDisposition(rawData) {
+  const data = rawData && typeof rawData === "object" ? rawData : {};
+  const paymentMethod = data.paymentMethod;
+  if (typeof paymentMethod !== "string" || !PAYMENT_METHODS.includes(paymentMethod)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Select a payment disposition before completing this order.",
+      { reason: "payment_method_required" },
+    );
+  }
+
+  const receiptRefRaw = data.receiptRef;
+  const receiptRef = typeof receiptRefRaw === "string" ? receiptRefRaw.trim().slice(0, 200) : "";
+  const paymentNotesRaw = data.paymentNotes;
+  const paymentNotes = typeof paymentNotesRaw === "string" ? paymentNotesRaw.trim().slice(0, 500) : "";
+
+  // No-charge/complimentary — a genuine disposition, not a payment method:
+  // no amount is collected, so amountPaid is deliberately never validated
+  // or written for this case.
+  if (paymentMethod === "no_charge") {
+    return {
+      paymentMethod,
+      receiptRef: receiptRef || undefined,
+      paymentNotes: paymentNotes || undefined,
+    };
+  }
+
+  const amountPaid = data.amountPaid;
+  if (typeof amountPaid !== "number" || !Number.isFinite(amountPaid) || amountPaid <= 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Enter a valid amount before completing this order.",
+      { reason: "payment_amount_required" },
+    );
+  }
+
+  return {
+    paymentMethod,
+    amountPaid,
+    receiptRef: receiptRef || undefined,
+    paymentNotes: paymentNotes || undefined,
+  };
+}
 
 // ─── Mark Completed ─────────────────────────────────────────────────────────
 exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (request) => {
@@ -467,6 +561,12 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
   if (data.fulfillmentStatus !== "readyForPickup" && data.fulfillmentStatus !== "outForDelivery") {
     throw new HttpsError("failed-precondition", "This order is not ready to be completed.");
   }
+
+  // Validated BEFORE the Odoo call and the transaction — fail fast, no
+  // partial Odoo/Firestore mutation on a missing/invalid disposition (same
+  // discipline as the Out for Delivery driver gate).
+  const disposition = resolvePaymentDisposition(request.data);
+
   const engineId = requireLinkedOdooOrder(data);
 
   const result = await callCommerce("completeOrderFulfillmentForHealthcare", { engineId });
@@ -483,6 +583,8 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
     );
   }
 
+  const isDelivery = data.deliveryCarrierEngineId != null;
+
   await applyFulfillmentTransition(db, orderRef, {
     fromStatuses: ["readyForPickup", "outForDelivery"],
     toStatus: "completed",
@@ -490,12 +592,30 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
     actorName,
     saleOrderState: result.data.saleOrderState,
     pickingState: result.data.pickingState,
-    // Milestone 7 — mirrors markPharmacyOrderDeliveryFailed's own
-    // failedDeliveries increment, for counter consistency: whichever
-    // terminal outcome an assigned delivery reaches, the Delivery Person's
-    // history counters stay in sync with it, in the same transaction as
-    // the status write (never a separate, racy follow-up write).
+    // Milestone 7 / Workflow refinement — one same-transaction side write
+    // covering both the pre-existing Delivery Person counter increment and
+    // the new payment fields, never a second, separate write.
     extraWrites: (tx, current) => {
+      const paymentUpdate = {
+        paymentStatus: "paid",
+        paymentMethod: disposition.paymentMethod,
+        paidAt: admin.firestore.FieldValue.serverTimestamp(),
+        paidByUserId: request.auth.uid,
+      };
+      if (disposition.amountPaid !== undefined) paymentUpdate.amountPaid = disposition.amountPaid;
+      if (disposition.receiptRef !== undefined) paymentUpdate.receiptReference = disposition.receiptRef;
+      if (disposition.paymentNotes !== undefined) paymentUpdate.paymentNotes = disposition.paymentNotes;
+      // Delivery orders only — this completion IS reception confirming the
+      // driver's phone/verbal report (drivers have no TrustyDr account this
+      // phase and never touch this system themselves). Deliberately
+      // separate from the generic fulfillmentStatusHistory entry above and
+      // from the driver's own identity (assignedDeliveryPersonId/Name).
+      if (isDelivery) {
+        paymentUpdate.confirmedDeliveryAt = admin.firestore.FieldValue.serverTimestamp();
+        paymentUpdate.confirmedDeliveryBy = request.auth.uid;
+      }
+      tx.update(orderRef, paymentUpdate);
+
       if (current.assignedDeliveryPersonId) {
         const personRef = db
           .collection("pharmacy_providers")
@@ -514,7 +634,7 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
     },
   });
 
-  return { orderId: orderRef.id, fulfillmentStatus: "completed" };
+  return { orderId: orderRef.id, fulfillmentStatus: "completed", paymentStatus: "paid" };
 });
 
 // ─── Mark Delivery Failed ───────────────────────────────────────────────────
@@ -664,8 +784,20 @@ exports.assignPharmacyOrderDeliveryPerson = onCall({ region: "us-central1" }, as
   // Assignment only makes sense before delivery has concluded — mirrors the
   // "before delivery is completed" bound the product spec calls out
   // explicitly for reassignment. 'completed'/'deliveryFailed' (and any
-  // earlier/other terminal status) are deliberately excluded.
-  const assignableStatuses = ["accepted", "preparing", "readyForPickup", "outForDelivery"];
+  // earlier/other terminal status) are deliberately excluded. Advance
+  // assignment from 'accepted'/'preparing' is explicit, confirmed product
+  // direction (2026-07-20) — operationally there is no problem assigning a
+  // driver early; only Out for Delivery itself hard-requires one.
+  // 'readyForPickup' is dead weight for a delivery-only action (this
+  // function already rejects non-delivery orders above) but kept for
+  // symmetry with the pre-existing list, same as before this change.
+  const assignableStatuses = [
+    "accepted",
+    "preparing",
+    "readyForPickup",
+    "readyForDelivery",
+    "outForDelivery",
+  ];
   if (!assignableStatuses.includes(data.fulfillmentStatus)) {
     throw new HttpsError("failed-precondition", "This order can no longer be assigned a delivery person.");
   }
@@ -727,3 +859,4 @@ exports.assignPharmacyOrderDeliveryPerson = onCall({ region: "us-central1" }, as
 exports.authorizePharmacyStaff = authorizePharmacyStaff;
 exports.requireAssignedDeliveryPerson = requireAssignedDeliveryPerson;
 exports.markReadyOrOutForDelivery = markReadyOrOutForDelivery;
+exports.resolvePaymentDisposition = resolvePaymentDisposition;

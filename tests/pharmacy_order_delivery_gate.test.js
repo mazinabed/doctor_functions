@@ -1,23 +1,27 @@
 'use strict';
 
 /**
- * Focused test for pharmacyOrderActions.js's Out-for-Delivery driver gate —
- * exercises the REAL exported functions (requireAssignedDeliveryPerson,
- * markReadyOrOutForDelivery) against the Firestore emulator via
- * firebase-admin, not a duplicate re-implementation of the validation
- * logic. Mirrors pharmacy_order_actions_guards.test.js's own
- * emulator-connection pattern.
+ * Focused test for pharmacyOrderActions.js's delivery workflow refinement —
+ * the new 'readyForDelivery' stage, the Out-for-Delivery driver gate now
+ * tied to that stage, and the payment-disposition completion gate.
+ * Exercises the REAL exported functions (requireAssignedDeliveryPerson,
+ * markReadyOrOutForDelivery, resolvePaymentDisposition) against the
+ * Firestore emulator via firebase-admin, not a duplicate re-implementation
+ * of the validation logic. Mirrors pharmacy_order_actions_guards.test.js's
+ * own emulator-connection pattern.
  *
  * markReadyOrOutForDelivery calls Commerce (getMarketplaceOrderStatusForHealthcare)
  * over a real network fetch once past all the Firestore-only precondition
  * checks — exactly like authorizePharmacyStaff's sibling test file, this
  * suite only exercises the precondition checks that reject BEFORE that
  * network call is ever reached, which is also where every rejection this
- * task cares about happens (the driver gate is deliberately ordered before
- * requireLinkedOdooOrder/callCommerce — see pharmacyOrderActions.js). A
- * "valid driver" success is proven at the level of the actual gate function
- * (requireAssignedDeliveryPerson resolving) rather than the full onCall
- * flow, for the same reason.
+ * task cares about happens (the driver gate and the fromStatus check are
+ * both ordered before requireLinkedOdooOrder/callCommerce — see
+ * pharmacyOrderActions.js). A "valid driver" success is proven at the level
+ * of the actual gate function (requireAssignedDeliveryPerson resolving)
+ * rather than the full onCall flow, for the same reason.
+ * resolvePaymentDisposition is a pure function — no emulator/network
+ * dependency at all.
  *
  * Run with the Firestore emulator active:
  *   firebase emulators:exec --only firestore "cd tests && npx jest pharmacy_order_delivery_gate --runInBand --forceExit"
@@ -35,6 +39,7 @@ const db = admin.firestore();
 const {
   requireAssignedDeliveryPerson,
   markReadyOrOutForDelivery,
+  resolvePaymentDisposition,
 } = require('../functions/commerce/pharmacyOrderActions');
 
 async function clearCollection(collectionPath) {
@@ -116,28 +121,53 @@ describe('requireAssignedDeliveryPerson', () => {
   });
 });
 
-describe('markReadyOrOutForDelivery — Out for Delivery driver gate', () => {
-  async function makeOrder(orderId, overrides) {
+describe('markReadyOrOutForDelivery — Ready for Delivery / Out for Delivery stages', () => {
+  async function makeOrder(orderId, fulfillmentStatus, overrides) {
     await db
       .collection('marketplace_orders')
       .doc(orderId)
       .set({
         pharmacyOwnerUid: 'uid_owner1',
-        fulfillmentStatus: 'preparing',
+        fulfillmentStatus,
         deliveryCarrierEngineId: 42,
         fulfillmentStatusHistory: [],
         ...overrides,
       });
   }
 
-  const outForDeliveryArgs = {
+  const readyForDeliveryArgs = {
     expectedIsDelivery: true,
-    toStatus: 'outForDelivery',
+    fromStatus: 'preparing',
+    toStatus: 'readyForDelivery',
     wrongTypeMessage: 'This is a pickup order.',
+    wrongStageMessage: 'This order is not in preparation.',
+    requireDriver: false,
   };
 
-  test('an unassigned delivery order is rejected before any Odoo/Firestore mutation', async () => {
-    await makeOrder('order_unassigned1', {});
+  const outForDeliveryArgs = {
+    expectedIsDelivery: true,
+    fromStatus: 'readyForDelivery',
+    toStatus: 'outForDelivery',
+    wrongTypeMessage: 'This is a pickup order.',
+    wrongStageMessage: 'This order is not ready for delivery yet.',
+    requireDriver: true,
+  };
+
+  test('preparing -> readyForDelivery never requires a driver (advance assignment stays optional)', async () => {
+    await makeOrder('order_ready_for_delivery1', 'preparing', {});
+    const request = { auth: { uid: 'uid_owner1' }, data: { orderId: 'order_ready_for_delivery1' } };
+
+    // No driver assigned and no linked Odoo order — if the driver gate ran
+    // here it would reject with driver_not_assigned; instead it must reach
+    // the pre-existing "no linked Odoo record" check, proving requireDriver:
+    // false is honored for this leg.
+    await expect(markReadyOrOutForDelivery(request, readyForDeliveryArgs)).rejects.toThrow(
+      /no linked Odoo record/i,
+    );
+  });
+
+  test('an unassigned delivery order cannot go Out for Delivery before any Odoo/Firestore mutation', async () => {
+    await makeOrder('order_unassigned1', 'readyForDelivery', {});
     const request = { auth: { uid: 'uid_owner1' }, data: { orderId: 'order_unassigned1' } };
 
     await expect(markReadyOrOutForDelivery(request, outForDeliveryArgs)).rejects.toMatchObject({
@@ -146,12 +176,12 @@ describe('markReadyOrOutForDelivery — Out for Delivery driver gate', () => {
     });
 
     const snap = await db.collection('marketplace_orders').doc('order_unassigned1').get();
-    expect(snap.data().fulfillmentStatus).toBe('preparing');
+    expect(snap.data().fulfillmentStatus).toBe('readyForDelivery');
     expect(snap.data().fulfillmentStatusHistory).toEqual([]);
   });
 
   test('a delivery order with an inactive assigned driver is rejected with no partial mutation', async () => {
-    await makeOrder('order_inactive_driver1', {
+    await makeOrder('order_inactive_driver1', 'readyForDelivery', {
       assignedDeliveryPersonId: 'driver_inactive1',
       assignedDeliveryPersonName: 'Inactive Driver',
     });
@@ -163,12 +193,12 @@ describe('markReadyOrOutForDelivery — Out for Delivery driver gate', () => {
     });
 
     const snap = await db.collection('marketplace_orders').doc('order_inactive_driver1').get();
-    expect(snap.data().fulfillmentStatus).toBe('preparing');
+    expect(snap.data().fulfillmentStatus).toBe('readyForDelivery');
     expect(snap.data().fulfillmentStatusHistory).toEqual([]);
   });
 
   test('a cross-organization assigned driver id is rejected the same as an invalid one', async () => {
-    await makeOrder('order_cross_org1', {
+    await makeOrder('order_cross_org1', 'readyForDelivery', {
       assignedDeliveryPersonId: 'driver_other_org1',
       assignedDeliveryPersonName: 'Other Org Driver',
     });
@@ -180,14 +210,29 @@ describe('markReadyOrOutForDelivery — Out for Delivery driver gate', () => {
     });
 
     const snap = await db.collection('marketplace_orders').doc('order_cross_org1').get();
-    expect(snap.data().fulfillmentStatus).toBe('preparing');
+    expect(snap.data().fulfillmentStatus).toBe('readyForDelivery');
+  });
+
+  test('Out for Delivery can no longer be reached directly from preparing (readyForDelivery is now mandatory)', async () => {
+    // Even a fully-valid, active, same-org driver assigned — jumping
+    // straight from 'preparing' must still fail on the stage check, before
+    // the driver gate is ever consulted.
+    await makeOrder('order_skip_stage1', 'preparing', {
+      assignedDeliveryPersonId: 'driver_active1',
+      assignedDeliveryPersonName: 'Active Driver',
+    });
+    const request = { auth: { uid: 'uid_owner1' }, data: { orderId: 'order_skip_stage1' } };
+
+    await expect(markReadyOrOutForDelivery(request, outForDeliveryArgs)).rejects.toThrow(
+      /not ready for delivery yet/i,
+    );
   });
 
   test('pickup order path (expectedIsDelivery: false) is unaffected by the driver gate', async () => {
     // No deliveryCarrierEngineId (pickup) and no driver assigned at all — if
     // the driver gate applied here it would reject with driver_not_assigned;
     // instead it must reach the pre-existing "no linked Odoo record" check,
-    // proving the new gate is skipped entirely for the pickup path.
+    // proving the driver gate is skipped entirely for the pickup path.
     await db.collection('marketplace_orders').doc('order_pickup1').set({
       pharmacyOwnerUid: 'uid_owner1',
       fulfillmentStatus: 'preparing',
@@ -199,9 +244,50 @@ describe('markReadyOrOutForDelivery — Out for Delivery driver gate', () => {
     await expect(
       markReadyOrOutForDelivery(request, {
         expectedIsDelivery: false,
+        fromStatus: 'preparing',
         toStatus: 'readyForPickup',
         wrongTypeMessage: 'This is a delivery order.',
+        wrongStageMessage: 'This order is not in preparation.',
+        requireDriver: false,
       }),
     ).rejects.toThrow(/no linked Odoo record/i);
+  });
+});
+
+describe('resolvePaymentDisposition — Completion payment gate', () => {
+  test('rejects a missing/unknown payment method', () => {
+    expect(() => resolvePaymentDisposition({})).toThrow(/payment disposition/i);
+    expect(() => resolvePaymentDisposition({ paymentMethod: 'paid_online' })).toThrow(/payment disposition/i);
+    expect(() => resolvePaymentDisposition({ paymentMethod: 'insurance' })).toThrow(/payment disposition/i);
+  });
+
+  test('rejects cash/card/zaincash/qi with a missing or non-positive amount', () => {
+    for (const method of ['cash', 'card', 'zaincash', 'qi']) {
+      expect(() => resolvePaymentDisposition({ paymentMethod: method })).toThrow(/valid amount/i);
+      expect(() => resolvePaymentDisposition({ paymentMethod: method, amountPaid: 0 })).toThrow(/valid amount/i);
+      expect(() => resolvePaymentDisposition({ paymentMethod: method, amountPaid: -5 })).toThrow(/valid amount/i);
+    }
+  });
+
+  test('resolves cash/card/zaincash/qi with a positive amount, trimming receiptRef/paymentNotes', () => {
+    const result = resolvePaymentDisposition({
+      paymentMethod: 'cash',
+      amountPaid: 15000,
+      receiptRef: '  R-1029  ',
+      paymentNotes: '  paid in full  ',
+    });
+    expect(result).toEqual({
+      paymentMethod: 'cash',
+      amountPaid: 15000,
+      receiptRef: 'R-1029',
+      paymentNotes: 'paid in full',
+    });
+  });
+
+  test('no_charge never requires or returns an amount', () => {
+    const result = resolvePaymentDisposition({ paymentMethod: 'no_charge', paymentNotes: 'goodwill replacement' });
+    expect(result.paymentMethod).toBe('no_charge');
+    expect(result.amountPaid).toBeUndefined();
+    expect(result.paymentNotes).toBe('goodwill replacement');
   });
 });
