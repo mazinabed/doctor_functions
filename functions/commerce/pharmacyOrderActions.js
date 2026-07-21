@@ -124,7 +124,7 @@ async function authorizePharmacyStaff(db, callerUid, pharmacyOwnerUid, requiredP
 async function applyFulfillmentTransition(
   db,
   orderRef,
-  { fromStatuses, toStatus, actorUid, actorName, saleOrderState, pickingState, extraWrites },
+  { fromStatuses, toStatus, actorUid, actorName, saleOrderState, pickingState, extraWrites, beforeWrite },
 ) {
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(orderRef);
@@ -137,6 +137,16 @@ async function applyFulfillmentTransition(
         "failed-precondition",
         "This order has already been updated — please refresh and try again.",
       );
+    }
+    // Business-rule hardening (2026-07-20) — an optional pre-write async
+    // re-validation, run against THIS transaction's own consistent read of
+    // `data` (never the pre-transaction snapshot the caller already had), so
+    // a concurrent change (reassignment, driver deactivation) between the
+    // caller's earlier check and this transaction's commit still aborts the
+    // write with no partial mutation. Must throw to abort — same convention
+    // as the fromStatuses check just above.
+    if (typeof beforeWrite === "function") {
+      await beforeWrite(tx, data);
     }
     const update = {
       fulfillmentStatus: toStatus,
@@ -302,6 +312,45 @@ exports.startPharmacyOrderPreparation = onCall({ region: "us-central1" }, async 
   return { orderId: orderRef.id, fulfillmentStatus: "preparing" };
 });
 
+// ─── Delivery-person validation (Out for Delivery gate) ────────────────────
+// Business-rule hardening (2026-07-20): a Home Delivery order must have a
+// valid, active delivery person assigned before it can go out for delivery.
+// The order's own assignedDeliveryPersonId is metadata written by
+// assignPharmacyOrderDeliveryPerson — never trusted blindly here. Every
+// check re-reads the actual delivery_personnel doc under THIS order's own
+// pharmacyOwnerUid, the exact same scoping assignPharmacyOrderDeliveryPerson
+// itself already uses (pharmacy_providers/{pharmacyOwnerUid}/
+// delivery_personnel/{id}) — a stale, deactivated, or cross-pharmacy id can
+// never pass, because a cross-pharmacy id simply cannot exist under this
+// owner's own subcollection. Pickup orders (markPharmacyOrderReadyForPickup)
+// never call this — this gate is delivery-only.
+function isActiveDriverSnap(personSnap) {
+  return personSnap.exists && personSnap.data().status === "active";
+}
+
+async function requireAssignedDeliveryPerson(db, pharmacyOwnerUid, assignedDeliveryPersonId) {
+  if (!assignedDeliveryPersonId || typeof assignedDeliveryPersonId !== "string") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Assign a delivery person to this order before marking it out for delivery.",
+      { reason: "driver_not_assigned" },
+    );
+  }
+  const personSnap = await db
+    .collection("pharmacy_providers")
+    .doc(pharmacyOwnerUid)
+    .collection("delivery_personnel")
+    .doc(assignedDeliveryPersonId)
+    .get();
+  if (!isActiveDriverSnap(personSnap)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "The assigned delivery person is no longer active — assign a different one before marking this order out for delivery.",
+      { reason: "driver_invalid" },
+    );
+  }
+}
+
 // ─── Mark Ready for Pickup / Mark Out for Delivery ─────────────────────────
 // Same underlying Odoo signal ('assigned' picking state IS "ready" — no
 // separate Odoo state exists for the two) — read-only re-verified live,
@@ -327,6 +376,13 @@ async function markReadyOrOutForDelivery(request, { expectedIsDelivery, toStatus
   if (data.fulfillmentStatus !== "preparing") {
     throw new HttpsError("failed-precondition", "This order is not in preparation.");
   }
+  // Fail fast, before the Commerce round-trip, whenever this is the
+  // delivery leg (expectedIsDelivery) — pickup orders never reach this
+  // check. Re-validated again transactionally below (beforeWrite) to close
+  // the race between this check and the actual write.
+  if (expectedIsDelivery) {
+    await requireAssignedDeliveryPerson(db, data.pharmacyOwnerUid, data.assignedDeliveryPersonId);
+  }
   const engineId = requireLinkedOdooOrder(data);
 
   const statusResult = await callCommerce("getMarketplaceOrderStatusForHealthcare", { engineId });
@@ -347,6 +403,32 @@ async function markReadyOrOutForDelivery(request, { expectedIsDelivery, toStatus
     actorName,
     saleOrderState: statusResult.data.state,
     pickingState: statusResult.data.pickingState,
+    beforeWrite: expectedIsDelivery
+      ? async (tx, current) => {
+          const id = current.assignedDeliveryPersonId;
+          if (!id || typeof id !== "string") {
+            throw new HttpsError(
+              "failed-precondition",
+              "Assign a delivery person to this order before marking it out for delivery.",
+              { reason: "driver_not_assigned" },
+            );
+          }
+          const personSnap = await tx.get(
+            db
+              .collection("pharmacy_providers")
+              .doc(current.pharmacyOwnerUid)
+              .collection("delivery_personnel")
+              .doc(id),
+          );
+          if (!isActiveDriverSnap(personSnap)) {
+            throw new HttpsError(
+              "failed-precondition",
+              "The assigned delivery person is no longer active — assign a different one before marking this order out for delivery.",
+              { reason: "driver_invalid" },
+            );
+          }
+        }
+      : undefined,
   });
 
   return { orderId: orderRef.id, fulfillmentStatus: toStatus };
@@ -643,3 +725,5 @@ exports.assignPharmacyOrderDeliveryPerson = onCall({ region: "us-central1" }, as
 // Exported for focused unit testing, same convention as
 // marketplaceCheckout.js's own exports at the bottom of that file.
 exports.authorizePharmacyStaff = authorizePharmacyStaff;
+exports.requireAssignedDeliveryPerson = requireAssignedDeliveryPerson;
+exports.markReadyOrOutForDelivery = markReadyOrOutForDelivery;
