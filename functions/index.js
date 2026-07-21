@@ -2295,6 +2295,7 @@ const {
   rejectPharmacyOrder,
   startPharmacyOrderPreparation,
   markPharmacyOrderReadyForPickup,
+  markPharmacyOrderReadyForDelivery,
   markPharmacyOrderOutForDelivery,
   markPharmacyOrderCompleted,
   assignPharmacyOrderDeliveryPerson,
@@ -2304,6 +2305,14 @@ exports.acceptPharmacyOrder = acceptPharmacyOrder;
 exports.rejectPharmacyOrder = rejectPharmacyOrder;
 exports.startPharmacyOrderPreparation = startPharmacyOrderPreparation;
 exports.markPharmacyOrderReadyForPickup = markPharmacyOrderReadyForPickup;
+// Workflow refinement (2026-07-20) — the delivery equivalent of
+// markPharmacyOrderReadyForPickup: preparing -> readyForDelivery. Missing
+// from this file (this is the ACTUAL Cloud Functions deployment entry
+// point — functions/package.json's "main" — pharmacyOrderActions.js
+// exporting it is not enough on its own) meant the function was never
+// deployed at all; a request to a nonexistent Cloud Function URL 404s with
+// no CORS headers, which browsers surface as a misleading CORS error.
+exports.markPharmacyOrderReadyForDelivery = markPharmacyOrderReadyForDelivery;
 exports.markPharmacyOrderOutForDelivery = markPharmacyOrderOutForDelivery;
 exports.markPharmacyOrderCompleted = markPharmacyOrderCompleted;
 // Milestone 7 (Simple Delivery Management) — assign/reassign a Delivery
