@@ -2179,6 +2179,20 @@ const {
 } = require('./notifications/onMarketplaceOrderFulfillmentUpdated');
 exports.onMarketplaceOrderFulfillmentUpdated = onMarketplaceOrderFulfillmentUpdated;
 
+// ─── Doctor Appointment Workflow Notifications (Phase 4) ──────────────────────
+// TrustyDr Workflow & Notification Platform -- see
+// NOTIFICATION_PLATFORM_PROGRESS.md at the ecosystem root. NEW trigger (no
+// equivalent existed before this phase): friendly, stage-specific push to the
+// patient whenever appointments.status/visitStatus changes to confirmed,
+// in_service, done, no_show, or cancelled -- see
+// onAppointmentStatusUpdated.js's own header for the full contract. Booking/
+// reception/waiting-room/visit-completion/cancellation logic is untouched;
+// appointment REMINDERS (above) remain a separate, untouched system.
+const {
+  onAppointmentStatusUpdated,
+} = require('./notifications/onAppointmentStatusUpdated');
+exports.onAppointmentStatusUpdated = onAppointmentStatusUpdated;
+
 // ─── Schedule Guard Domain ─────────────────────────────────────────────────────
 // Server-side enforcement for protected schedule operations.
 // All six functions use Firestore transactions to atomically validate

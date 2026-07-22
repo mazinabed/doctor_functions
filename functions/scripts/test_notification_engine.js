@@ -21,6 +21,8 @@ const { emitWorkflowEvent } = require('../lib/notificationPlatform/notificationE
 require('../lib/notificationPlatform/workflows/marketplaceOrderWorkflow');
 require('../lib/notificationPlatform/workflows/prescriptionWorkflow');
 require('../lib/notificationPlatform/workflows/labOrderWorkflow');
+require('../lib/notificationPlatform/workflows/appointmentWorkflow');
+const { _deriveToStage } = require('../notifications/onAppointmentStatusUpdated');
 
 // ─── Minimal in-memory Firestore fake ──────────────────────────────────────
 function makeFakeDb() {
@@ -205,6 +207,68 @@ async function main() {
   assert.ok(labRejected.bodyEn.includes('Fully booked'), 'the per-instance reason must be threaded into the content');
   const totalLabDocs = Array.from(db._dump().keys()).filter((k) => k.includes(labRequestId)).length;
   assert.strictEqual(totalLabDocs, 1, 'exactly ONE notification document should exist across both lab stages');
+
+  // 8) Appointment workflow (Phase 4) -- genuinely NEW notification-emitting
+  // capability (no equivalent existed before), but must follow the exact
+  // same collapse-to-one-document/legacy-field/terminal-flag behavior as
+  // the other three workflows.
+  const apptId = 'appt_1';
+  const apptNotifKey = `users/${recipientUid}/notifications/wf_appointment_${apptId}`;
+  await emitWorkflowEvent(db, {
+    workflowType: 'appointment',
+    entityId: apptId,
+    recipientUid,
+    toStage: 'confirmed',
+    contentContext: { doctorNameEn: 'Dr. Test', doctorNameAr: 'د. اختبار', toStage: 'confirmed' },
+  });
+  const apptConfirmed = db._dump().get(apptNotifKey);
+  assert.strictEqual(apptConfirmed.type, 'appointment_status', 'legacy `type` field must be present');
+  assert.strictEqual(apptConfirmed.appointmentId, apptId, 'legacy `appointmentId` field must be present for existing routing conventions');
+  assert.strictEqual(apptConfirmed.isCancelled, false);
+
+  await emitWorkflowEvent(db, {
+    workflowType: 'appointment',
+    entityId: apptId,
+    recipientUid,
+    toStage: 'done',
+    contentContext: { doctorNameEn: 'Dr. Test', doctorNameAr: 'د. اختبار', toStage: 'done' },
+  });
+  const apptDone = db._dump().get(apptNotifKey);
+  assert.strictEqual(apptDone.currentStage, 'done');
+  assert.strictEqual(apptDone.isCompleted, true);
+  const totalApptDocs = Array.from(db._dump().keys()).filter((k) => k.includes(apptId)).length;
+  assert.strictEqual(totalApptDocs, 1, 'exactly ONE notification document should exist across both appointment stages');
+
+  // 9) onAppointmentStatusUpdated's deriveToStage -- the adapter-level logic
+  // that must emit exactly ONE stage even when a single write changes BOTH
+  // status and visitStatus at once (visitStatus 'done' also flips status to
+  // 'completed' -- appointment_lifecycle_controller.dart's updateVisitStatus).
+  assert.strictEqual(
+    _deriveToStage({ status: 'confirmed', visitStatus: 'in_service' }, { status: 'completed', visitStatus: 'done' }),
+    'done',
+    'a combined status+visitStatus write (visit completion) must resolve to exactly one stage: done',
+  );
+  assert.strictEqual(
+    _deriveToStage({ status: 'pending', visitStatus: undefined }, { status: 'confirmed', visitStatus: undefined }),
+    'confirmed',
+  );
+  assert.strictEqual(
+    _deriveToStage({ status: 'confirmed', visitStatus: 'waiting' }, { status: 'confirmed', visitStatus: 'in_service' }),
+    'in_service',
+  );
+  assert.strictEqual(
+    _deriveToStage({ status: 'confirmed', visitStatus: 'waiting' }, { status: 'cancelled', visitStatus: 'waiting' }),
+    'cancelled',
+  );
+  assert.strictEqual(
+    _deriveToStage({ status: 'confirmed', visitStatus: 'waiting' }, { status: 'confirmed', visitStatus: 'no_show' }),
+    'no_show',
+  );
+  assert.strictEqual(
+    _deriveToStage({ status: 'confirmed', visitStatus: 'waiting' }, { status: 'confirmed', visitStatus: 'waiting' }),
+    null,
+    'no change in either field must derive no stage at all',
+  );
 
   console.log('All notification engine assertions passed.');
 }
