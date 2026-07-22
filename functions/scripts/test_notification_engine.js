@@ -19,6 +19,8 @@
 const assert = require('assert');
 const { emitWorkflowEvent } = require('../lib/notificationPlatform/notificationEngine');
 require('../lib/notificationPlatform/workflows/marketplaceOrderWorkflow');
+require('../lib/notificationPlatform/workflows/prescriptionWorkflow');
+require('../lib/notificationPlatform/workflows/labOrderWorkflow');
 
 // ─── Minimal in-memory Firestore fake ──────────────────────────────────────
 function makeFakeDb() {
@@ -150,6 +152,59 @@ async function main() {
   assert.strictEqual(afterFailure.isCancelled, true);
   assert.strictEqual(afterFailure.priority, 'critical');
   assert.ok(afterFailure.titleEn && afterFailure.bodyEn, 'deliveryFailed must have real content, not the previous silent gap');
+
+  // 6) Prescription workflow (Phase 3 migration) -- three transitions that
+  // previously each wrote their OWN document (rx_received_/rx_ready_/
+  // rx_dispensed_<id>) must now collapse into ONE stable document.
+  const rxRequestId = 'rx_request_1';
+  const rxNotifKey = `users/${recipientUid}/notifications/wf_prescription_${rxRequestId}`;
+  for (const stage of ['received', 'ready', 'dispensed']) {
+    await emitWorkflowEvent(db, {
+      workflowType: 'prescription',
+      entityId: rxRequestId,
+      recipientUid,
+      toStage: stage,
+      contentContext: { partnerNameEn: 'Test Pharmacy', partnerNameAr: 'صيدلية الاختبار', toStage: stage },
+    });
+  }
+  const totalRxDocs = Array.from(db._dump().keys()).filter((k) => k.includes(rxRequestId)).length;
+  assert.strictEqual(totalRxDocs, 1, 'exactly ONE notification document should exist across all 3 prescription stages');
+  const rxFinal = db._dump().get(rxNotifKey);
+  assert.strictEqual(rxFinal.currentStage, 'dispensed');
+  assert.strictEqual(rxFinal.type, 'rx_status', 'legacy `type` field must be present for the current app');
+  assert.strictEqual(rxFinal.subtype, 'dispensed');
+  assert.strictEqual(rxFinal.clinicalRequestId, rxRequestId, 'legacy `clinicalRequestId` field must be present for existing tap-to-navigate routing');
+  assert.strictEqual(rxFinal.isCompleted, true);
+
+  // 7) Lab workflow (Phase 3 migration) -- 'cancelled' and 'rejected' are
+  // distinct stage keys sharing the same content builder; both must be
+  // marked isCancelled and produce real content.
+  const labRequestId = 'lab_request_1';
+  const labNotifKey = `users/${recipientUid}/notifications/wf_lab_order_${labRequestId}`;
+  await emitWorkflowEvent(db, {
+    workflowType: 'lab_order',
+    entityId: labRequestId,
+    recipientUid,
+    toStage: 'scheduled',
+    contentContext: { providerNameEn: 'Test Lab', providerNameAr: 'مختبر الاختبار', toStage: 'scheduled' },
+  });
+  const labConfirmed = db._dump().get(labNotifKey);
+  assert.strictEqual(labConfirmed.subtype, 'confirmed', 'legacy `subtype` must map scheduled -> confirmed');
+
+  await emitWorkflowEvent(db, {
+    workflowType: 'lab_order',
+    entityId: labRequestId,
+    recipientUid,
+    toStage: 'rejected',
+    contentContext: { providerNameEn: 'Test Lab', providerNameAr: 'مختبر الاختبار', reason: 'Fully booked', toStage: 'rejected' },
+  });
+  const labRejected = db._dump().get(labNotifKey);
+  assert.strictEqual(labRejected.currentStage, 'rejected');
+  assert.strictEqual(labRejected.isCancelled, true);
+  assert.strictEqual(labRejected.subtype, 'cancelled', 'legacy `subtype` must map both cancelled and rejected -> cancelled');
+  assert.ok(labRejected.bodyEn.includes('Fully booked'), 'the per-instance reason must be threaded into the content');
+  const totalLabDocs = Array.from(db._dump().keys()).filter((k) => k.includes(labRequestId)).length;
+  assert.strictEqual(totalLabDocs, 1, 'exactly ONE notification document should exist across both lab stages');
 
   console.log('All notification engine assertions passed.');
 }
