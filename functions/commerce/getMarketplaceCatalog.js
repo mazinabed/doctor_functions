@@ -68,5 +68,12 @@ exports.getMarketplaceCatalog = onCall({ region: "us-central1" }, async (request
   return {
     products: Array.isArray(data.products) ? data.products : [],
     categories: Array.isArray(data.categories) ? data.categories : [],
+    // Store Branding V1 (2026-07-22) — real, merchant-controlled storefront
+    // identity for this one orgId, sourced the same way products/categories
+    // are (a thin relay of Commerce's own response — see
+    // marketplaceBridge.ts's brandingFromOrgDoc). Null fields mean "not
+    // uploaded yet", not an error; the Patient App's existing
+    // gradient/icon fallback already handles that.
+    store: data.store && typeof data.store === "object" ? data.store : null,
   };
 });

@@ -193,7 +193,24 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
         city_ku: c.data.city_ku || null,
         facilityAddress: c.data.facilityAddress || null,
         productCount: commerceStore.productCount,
-        featuredImageUrl: commerceStore.featuredImageUrl || null,
+        // Store Branding V1 (2026-07-22) — Commerce.storeBranding.ts is now
+        // the authoritative source for real storefront identity. Commerce
+        // no longer returns featuredImageUrl at all (that field used to be
+        // a sampled PRODUCT image standing in for a store banner — removed
+        // outright, never replaced, per the approved architecture decision
+        // that a product must never represent the merchant itself). Kept
+        // here as an always-null field, not deleted from this Healthcare
+        // response shape, purely so no existing Flutter field silently
+        // disappears from the wire contract.
+        featuredImageUrl: null,
+        logoUrl: commerceStore.logoUrl || null,
+        bannerUrl: commerceStore.bannerUrl || null,
+        tagline_en: commerceStore.tagline_en || null,
+        tagline_ar: commerceStore.tagline_ar || null,
+        tagline_ku: commerceStore.tagline_ku || null,
+        description_en: commerceStore.description_en || null,
+        description_ar: commerceStore.description_ar || null,
+        description_ku: commerceStore.description_ku || null,
       };
     })
     .filter((s) => s !== null)
