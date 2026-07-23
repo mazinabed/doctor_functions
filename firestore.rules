@@ -1830,12 +1830,11 @@ service cloud.firestore {
       // checkedIn is kept as a valid from-state for backward compatibility with
       // legacy walk-in docs created before the pharmacy lifecycle was separated.
       //
-      // dispensingItems (Phase 8, 2026-07-23) — the pharmacist's own
-      // confirmed dispensing lines, written in this SAME update by
-      // confirmPharmacyPreparing (clinical_request_repo.dart). Optional —
-      // hasOnly is a ceiling, not a floor, so the plain markPartnerPreparing
-      // path (no dispensing lines, e.g. a non-pharmacy partner request)
-      // still works unchanged.
+      // Workflow refinement (2026-07-23): this is a bare status flip only —
+      // no dispensingItems here. The pharmacist builds the dispensing cart
+      // WHILE the card sits in "Preparing" (PrepareDispensingPage), so
+      // dispensingItems is written later, at the preparing -> ready
+      // transition below (Complete Preparation), not here.
       allow update: if isSignedIn()
         && resource.data.get('requestDestination', '') == 'partner'
         && (isLabMember(resource.data.get('partnerProviderId', ''))
@@ -1846,12 +1845,20 @@ service cloud.firestore {
         && request.resource.data.get('status', '') == 'in_progress'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'partnerStatus', 'status', 'claimedAt',
-             'partnerPreparingAt', 'partnerPreparingByUid', 'updatedAt',
-             'dispensingItems'
+             'partnerPreparingAt', 'partnerPreparingByUid', 'updatedAt'
            ]);
 
       // Pharmacy: preparing + in_progress → ready + completed.
       // Reception handles the final dispense step separately (markDispensed).
+      //
+      // dispensingItems (workflow refinement, 2026-07-23) — the
+      // pharmacist's own confirmed dispensing lines, written in this SAME
+      // update by completePharmacyPreparing (clinical_request_repo.dart),
+      // once Confirm/Complete Preparation has already called
+      // CommerceBridgeClient.dispenseStock successfully. Optional — hasOnly
+      // is a ceiling, not a floor, so the plain markPartnerReady path (no
+      // dispensing lines, e.g. a non-pharmacy partner request such as lab)
+      // still works unchanged.
       allow update: if isSignedIn()
         && resource.data.get('requestDestination', '') == 'partner'
         && (isLabMember(resource.data.get('partnerProviderId', ''))
@@ -1862,7 +1869,8 @@ service cloud.firestore {
         && request.resource.data.get('status', '') == 'completed'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'partnerStatus', 'status', 'completedAt',
-             'partnerReadyAt', 'partnerReadyByUid', 'updatedAt'
+             'partnerReadyAt', 'partnerReadyByUid', 'updatedAt',
+             'dispensingItems'
            ]);
 
       // Pharmacy: ready + completed → dispensed (patient pickup).
