@@ -20,12 +20,27 @@
 // own mapping table in doctor_portal for the full state design). Only 3 of
 // the actions here make a real Odoo write:
 //   - rejectPharmacyOrder            -> reuses cancelMarketplaceOrderForHealthcare
-//   - startPharmacyOrderPreparation  -> startOrderPreparationForHealthcare (action_assign)
-//   - markPharmacyOrderCompleted     -> completeOrderFulfillmentForHealthcare (button_validate)
+//   - startPharmacyOrderPreparation  -> startOrderPreparationForHealthcare
+//     (Phase 7, 2026-07-23 reorder: action_assign + button_validate — this
+//     is now where the real stock decrement happens, matching pickingState
+//     'done' immediately, not just 'assigned')
+//   - markPharmacyOrderCompleted     -> completeOrderFulfillmentForHealthcare
+//     (Phase 7: pure re-read now, no Odoo write — the picking was already
+//     validated back at Preparing; "Completed" is handoff, not inventory
+//     removal)
 // The others (accept, markReadyForPickup, markReadyForDelivery,
 // markOutForDelivery) are Healthcare-side flips gated on a live READ-ONLY
 // re-check (getMarketplaceOrderStatusForHealthcare) — never a blind trust
 // of the cached Firestore projection.
+//
+// IMPORTANT (Phase 7, 2026-07-23): pickingState now reaches 'done' at
+// Preparing, not at Completed — markReadyOrOutForDelivery's own gate below
+// was updated from 'assigned' to 'done' to match. Patient-facing status
+// (TrustyDr-pwa) must derive its labels from fulfillmentStatus, never from
+// this live Odoo pickingState — see marketplace_order_details_page.dart's
+// own _liveStatusLabelKey. Odoo's pickingState stays an internal
+// operational/ERP-sync signal only; TrustyDr's own fulfillmentStatus is the
+// one customer/business-facing source of truth for order progress.
 //
 // Workflow refinement (2026-07-20): delivery orders now pass through a
 // distinct 'readyForDelivery' stage between 'preparing' and 'outForDelivery'
@@ -409,10 +424,15 @@ async function markReadyOrOutForDelivery(
   if (!statusResult.ok) {
     throw new HttpsError("internal", "Could not verify the order with the store system. Please try again.");
   }
-  if (statusResult.data.state !== "sale" || statusResult.data.pickingState !== "assigned") {
+  // Phase 7, 2026-07-23 reorder: the stock decrement now happens at
+  // Preparing (startOrderPreparation), so by the time an order reaches
+  // Ready/Out for Delivery its picking is already fully validated ('done'),
+  // never merely 'assigned' — this gate checks the same underlying fact
+  // (stock has actually moved) under the new timing, not a weaker one.
+  if (statusResult.data.state !== "sale" || statusResult.data.pickingState !== "done") {
     throw new HttpsError(
       "failed-precondition",
-      "This order is not yet ready — stock has not been fully reserved.",
+      "This order is not yet ready — stock has not been fully prepared.",
     );
   }
 
