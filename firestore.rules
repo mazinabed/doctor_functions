@@ -1829,6 +1829,13 @@ service cloud.firestore {
       // Pharmacy drives preparation directly from received (no separate checkedIn step).
       // checkedIn is kept as a valid from-state for backward compatibility with
       // legacy walk-in docs created before the pharmacy lifecycle was separated.
+      //
+      // dispensingItems (Phase 8, 2026-07-23) — the pharmacist's own
+      // confirmed dispensing lines, written in this SAME update by
+      // confirmPharmacyPreparing (clinical_request_repo.dart). Optional —
+      // hasOnly is a ceiling, not a floor, so the plain markPartnerPreparing
+      // path (no dispensing lines, e.g. a non-pharmacy partner request)
+      // still works unchanged.
       allow update: if isSignedIn()
         && resource.data.get('requestDestination', '') == 'partner'
         && (isLabMember(resource.data.get('partnerProviderId', ''))
@@ -1839,7 +1846,8 @@ service cloud.firestore {
         && request.resource.data.get('status', '') == 'in_progress'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
              'partnerStatus', 'status', 'claimedAt',
-             'partnerPreparingAt', 'partnerPreparingByUid', 'updatedAt'
+             'partnerPreparingAt', 'partnerPreparingByUid', 'updatedAt',
+             'dispensingItems'
            ]);
 
       // Pharmacy: preparing + in_progress → ready + completed.
