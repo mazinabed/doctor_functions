@@ -17,7 +17,7 @@
 //
 // Odoo has no native "pharmacy accepted this order" or "ready for
 // pickup/delivery"/"out for delivery" concept (see pharmacy_order_status.dart's
-// own mapping table in doctor_portal for the full state design). Only 3 of
+// own mapping table in doctor_portal for the full state design). Only 4 of
 // the actions here make a real Odoo write:
 //   - rejectPharmacyOrder            -> reuses cancelMarketplaceOrderForHealthcare
 //   - startPharmacyOrderPreparation  -> startOrderPreparationForHealthcare
@@ -28,6 +28,13 @@
 //     (Phase 7: pure re-read now, no Odoo write — the picking was already
 //     validated back at Preparing; "Completed" is handoff, not inventory
 //     removal)
+//   - markPharmacyOrderDeliveryFailed -> processDeliveryFailureForHealthcare
+//     (Commerce Reverse Fulfillment Phase 9C, 2026-07-27: full-order
+//     stock.return.picking reversal, driven through the same Reverse
+//     Fulfillment case state machine Phase 9A/9B use, auto-resolved and
+//     closed in the same request since there is no separate Commerce
+//     review step for this event — see that endpoint's own doc comment in
+//     reverseFulfillment.ts for the full rationale)
 // The others (accept, markReadyForPickup, markReadyForDelivery,
 // markOutForDelivery) are Healthcare-side flips gated on a live READ-ONLY
 // re-check (getMarketplaceOrderStatusForHealthcare) — never a blind trust
@@ -667,14 +674,21 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
 // orders have no delivery leg to fail, and this must never be usable as a
 // side-door out of 'preparing'/'readyForPickup'.
 //
-// No Odoo write here (same as Accept/Ready/Out for Delivery — a Healthcare-
-// side-only outcome), but still re-verifies the order is genuinely still
-// live in Odoo first (never a blind trust of the cached projection),
-// mirroring every other action in this file. What (if anything) should
-// happen to the underlying Odoo sale order on a failed delivery — restock,
-// refund, redeliver — is explicitly out of scope for V1 (would require
-// exactly the failure-reason taxonomy the product spec says not to build
-// yet); this function only records the operational outcome.
+// Commerce Reverse Fulfillment Phase 9C (2026-07-27): this now DOES make a
+// real Odoo write — processDeliveryFailureForHealthcare, a full-order
+// stock.return.picking reversal (stock was already decremented back at
+// Start Preparing and was never given back before this phase). Same
+// "marketplace_orders is never updated before Odoo has confirmed success"
+// law as every other action here: the Commerce call happens BEFORE the
+// Firestore transition below, and this function aborts with no Firestore
+// write at all if Commerce doesn't confirm. idempotencyKey is derived
+// deterministically from this order's own Firestore doc id — a failed
+// delivery is only ever reachable once per order (this function's own
+// transactional fromStatuses guard prevents a second call), so a stable,
+// order-scoped key is sufficient; it also protects against a genuine
+// network-retry of this exact call ever double-returning the same stock.
+// Refund/redelivery are still explicitly out of scope for V1 — restock is
+// the only recovery this phase performs.
 exports.markPharmacyOrderDeliveryFailed = onCall({ region: "us-central1" }, async (request) => {
   if (!request.auth) {
     throw new HttpsError("unauthenticated", "You must be signed in.");
@@ -704,6 +718,20 @@ exports.markPharmacyOrderDeliveryFailed = onCall({ region: "us-central1" }, asyn
   }
   if (statusResult.data.state !== "sale") {
     throw new HttpsError("failed-precondition", "This order is no longer active in the store system.");
+  }
+
+  const deliveryFailureResult = await callCommerce("processDeliveryFailureForHealthcare", {
+    orgId: data.orgId,
+    saleOrderEngineId: engineId,
+    healthcareOrderRef: orderRef.id,
+    actorUid: request.auth.uid,
+    idempotencyKey: `delivery-failure-${orderRef.id}`,
+  });
+  if (!deliveryFailureResult.ok) {
+    throw new HttpsError(
+      "internal",
+      deliveryFailureResult.data.error || "Could not process this delivery failure. Please try again.",
+    );
   }
 
   // Optional free-text note (V1: no failure-reason taxonomy) — capped
