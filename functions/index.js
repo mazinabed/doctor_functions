@@ -2290,12 +2290,14 @@ exports.adminDeleteAttributeValue = adminDeleteAttributeValue;
 const {
   getMarketplaceCheckoutProfile,
   placeMarketplaceOrder,
+  quoteMarketplaceCart,
   cancelMarketplaceOrder,
   getMarketplaceOrderStatus,
   getMarketplaceDeliveryMethods,
 } = require("./commerce/marketplaceCheckout");
 exports.getMarketplaceCheckoutProfile = getMarketplaceCheckoutProfile;
 exports.placeMarketplaceOrder = placeMarketplaceOrder;
+exports.quoteMarketplaceCart = quoteMarketplaceCart;
 exports.cancelMarketplaceOrder = cancelMarketplaceOrder;
 exports.getMarketplaceOrderStatus = getMarketplaceOrderStatus;
 exports.getMarketplaceDeliveryMethods = getMarketplaceDeliveryMethods;

@@ -249,6 +249,13 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     locale,
     storeNameEn,
     storeNameAr,
+    // Phase C Priority 1 (2026-07-26) — owner-created coupon-code
+    // promotion + the draft quotation (from a prior quoteMarketplaceCart
+    // call) this order finalizes. Both optional: an absent quotationEngineId
+    // simply creates a fresh draft instead of finalizing an existing one
+    // (see trustydr-commerce's resolveOrCreateDraftMarketplaceOrder).
+    couponCode,
+    quotationEngineId,
   } = request.data || {};
 
   if (
@@ -425,6 +432,9 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     // trust this bridge's fail-fast check alone — defense in depth against
     // a billing-status change in the narrow window between the two reads.
     pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
+    couponCode: typeof couponCode === "string" && couponCode ? couponCode : undefined,
+    quotationEngineId:
+      typeof quotationEngineId === "string" && quotationEngineId ? quotationEngineId : undefined,
   };
 
   const result = await callCommerce("placeMarketplaceOrderForHealthcare", commercePayload);
@@ -453,6 +463,19 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
         "invalid-argument",
         result.data.message || "A delivery address is required for home delivery.",
         { code: "delivery_address_required" },
+      );
+    }
+    // Phase C Priority 1 (2026-07-26) — a coupon code that doesn't match
+    // any active, owner-created promotion (or doesn't apply to this
+    // cart's contents) — see trustydr-commerce's posErrors.ts
+    // INVALID_COUPON_CODE. Surfaced as its own invalid-argument code so
+    // the Patient App can show a specific "invalid coupon code" message.
+    if (result.status === 400 && result.data.error === "INVALID_COUPON_CODE") {
+      throwLogged(
+        "commerce_400_invalid_coupon_code",
+        "invalid-argument",
+        result.data.message || "This coupon code is not valid.",
+        { code: "invalid_coupon_code" },
       );
     }
     throwLogged(
@@ -487,6 +510,127 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
   });
 
   return { orderId: idempotencyKey, order: result.data.order };
+});
+
+// Phase C Priority 1 (2026-07-26) — Unified Pricing Breakdown: "Patient
+// cart -> backend creates or updates an Odoo draft quotation -> apply
+// eligible promotion -> Odoo computes taxes and totals -> return unified
+// pricing breakdown -> patient confirms -> finalize the SAME quotation."
+// Same auth/identity-resolution/billing-gate discipline as
+// placeMarketplaceOrder above, but deliberately has NO idempotency-
+// transaction/Firestore-reservation step: quoting creates no patient-
+// facing order record and has no "already in flight" hazard to guard
+// against — re-quoting (cart/coupon/delivery changed, or just a debounce
+// re-fire) is always safe and expected to happen repeatedly before the
+// patient ever taps Confirm. Returns quotationEngineId, which the Flutter
+// client must pass back on the NEXT quote (to update this same draft
+// rather than accumulating orphaned ones) and again to placeMarketplaceOrder
+// (to finalize this exact quotation rather than a fresh one).
+exports.quoteMarketplaceCart = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throwLogged("auth_check", "unauthenticated", "You must be signed in.");
+  }
+  const patientId = request.auth.uid;
+
+  const { orgId, lines, deliveryCarrierEngineId, locale, couponCode, quotationEngineId } =
+    request.data || {};
+
+  if (!orgId || typeof orgId !== "string" || !Array.isArray(lines) || lines.length === 0) {
+    throwLogged(
+      "validate_request_shape",
+      "invalid-argument",
+      "orgId and a non-empty lines array are required.",
+      { orgId: orgId || null, lineCount: Array.isArray(lines) ? lines.length : null },
+    );
+  }
+  if (lines.some((l) => !l || !l.productEngineId || !(Number(l.quantity) > 0))) {
+    throwLogged(
+      "validate_lines",
+      "invalid-argument",
+      "Every line requires a productEngineId and a positive quantity.",
+      { lineCount: lines.length },
+    );
+  }
+
+  const db = admin.firestore();
+
+  const patientProfileSnap = await db.collection("users").doc(patientId).get();
+  const patientProfile = patientProfileSnap.exists ? patientProfileSnap.data() : {};
+  const resolvedName = typeof patientProfile.name === "string" ? patientProfile.name.trim() : "";
+  if (!resolvedName) {
+    throwLogged(
+      "resolve_patient_name",
+      "failed-precondition",
+      "Please complete your profile name before placing an order.",
+      { patientProfileExists: patientProfileSnap.exists },
+    );
+  }
+  const resolvedPhone =
+    typeof patientProfile.phoneNumber === "string" && patientProfile.phoneNumber
+      ? patientProfile.phoneNumber
+      : undefined;
+
+  // Same billing gate as placeMarketplaceOrder — a non-operational store
+  // must never even preview pricing (it can never actually be ordered
+  // from), and this is the fast/cheap check before any Odoo round trip.
+  const commerceSubscriptionStatus = await resolveCommerceSubscriptionStatus(db, orgId);
+  if (!isCommerceBillingOperational(commerceSubscriptionStatus)) {
+    throwLogged(
+      "billing_gate",
+      "failed-precondition",
+      "This store is not currently available for orders.",
+      { code: "store_unavailable", orgId, commerceSubscriptionStatus },
+    );
+  }
+
+  const result = await callCommerce("quoteMarketplaceCartForHealthcare", {
+    orgId,
+    patientRef: patientId,
+    patientName: resolvedName,
+    patientPhone: resolvedPhone,
+    lines,
+    deliveryCarrierEngineId: deliveryCarrierEngineId || undefined,
+    lang: resolveOdooLang(locale),
+    pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
+    couponCode: typeof couponCode === "string" && couponCode ? couponCode : undefined,
+    quotationEngineId:
+      typeof quotationEngineId === "string" && quotationEngineId ? quotationEngineId : undefined,
+  });
+
+  if (!result.ok) {
+    if (result.status === 409) {
+      throwLogged(
+        "commerce_409_unavailable",
+        "failed-precondition",
+        result.data.error || "Some items are no longer available.",
+        { unavailable: result.data.unavailable || [] },
+      );
+    }
+    if (result.status === 403) {
+      throwLogged(
+        "commerce_403_store_unavailable",
+        "failed-precondition",
+        result.data.message || "This store is not currently available for orders.",
+        { code: "store_unavailable" },
+      );
+    }
+    if (result.status === 400 && result.data.error === "INVALID_COUPON_CODE") {
+      throwLogged(
+        "commerce_400_invalid_coupon_code",
+        "invalid-argument",
+        result.data.message || "This coupon code is not valid.",
+        { code: "invalid_coupon_code" },
+      );
+    }
+    throwLogged(
+      "commerce_unhandled_error_status",
+      "internal",
+      result.data.error || "Could not calculate the cart total. Please try again.",
+      { status: result.status, dataError: result.data.error || null },
+    );
+  }
+
+  return result.data.quote;
 });
 
 // Cancellation boundary (business rule owned here, not by Odoo or
