@@ -106,10 +106,29 @@ exports.resolveAccessContext = onRequest(
         : null;
 
       let pharmacyProviderStatus = null;
+      // Store Activation State Audit — Checkpoint (2026-07-27): the pharmacy's
+      // real registered business name, so Commerce's activateCommerceForOrganization
+      // can name the new Odoo tenant company correctly instead of a generic
+      // placeholder. English only (Odoo's res.company.name has no per-language
+      // variants) — matches provisionOwnerUser's own precedent of resolving one
+      // definite value per field, with localization handled separately (the
+      // `lang` param) rather than threaded through this one.
+      //
+      // Regression fix (2026-07-27): this originally read clinicName_en, which
+      // only ever exists on the doctors/{uid} draft — pharmacy_providers/{uid}
+      // (the document actually being read here) stores the pharmacy's business
+      // name as facilityName_en (written by the doctor-to-pharmacy onboarding
+      // conversion in doctor_portal's doctor_onboarding_controller.dart). The
+      // wrong field name meant this was always null, silently falling back to
+      // the "My Pharmacy" placeholder for every pharmacy.
+      let pharmacyClinicName = null;
       if (role === "pharmacy_provider") {
         const providerDoc = await db.collection("pharmacy_providers").doc(uid).get();
         pharmacyProviderStatus = providerDoc.exists
           ? normalizeStatus(providerDoc.data().status)
+          : null;
+        pharmacyClinicName = providerDoc.exists
+          ? providerDoc.data().facilityName_en || null
           : null;
       }
 
@@ -188,6 +207,7 @@ exports.resolveAccessContext = onRequest(
         role,
         isPharmacyStaff,
         pharmacyProviderStatus,
+        pharmacyClinicName,
         pharmacyStaffPharmacyId,
         pharmacyStaffStoreAccess,
         pharmacyStaffPhoneNumber,
