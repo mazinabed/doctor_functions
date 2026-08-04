@@ -49,6 +49,31 @@ async function requireAdmin(request) {
   }
 }
 
+// Error-mapping fix (2026-08-05) — this used to collapse EVERY non-2xx
+// Commerce response into "invalid-argument", regardless of actual cause:
+// a genuine bad-input 400 and a Commerce-side 500 (e.g. a Firestore query
+// missing a required index) were reported to the browser identically,
+// hiding which one actually happened. Maps Commerce's real HTTP status to
+// the matching HttpsError code instead, one case per status family this
+// bridge's own endpoints can actually return (see standaloneBillingAdmin.ts):
+// 400 bad input, 403 authorization failure, 404 missing resource, 409/422
+// conflict-or-invalid-state, 5xx backend failure. The 5xx branch
+// deliberately does NOT forward Commerce's own response body to the
+// browser (it's already a generic "Internal error." string today, but
+// this must not become a channel for leaking a future, more detailed
+// error) — the real detail stays in this relay's own server-side log line
+// (Cloud Logging), which already carries the full status + body for
+// whoever is diagnosing it.
+function httpsErrorCodeForStatus(status) {
+  if (status === 400) return "invalid-argument";
+  if (status === 401) return "unauthenticated";
+  if (status === 403) return "permission-denied";
+  if (status === 404) return "not-found";
+  if (status === 409 || status === 422) return "failed-precondition";
+  if (status >= 500) return "internal";
+  return "invalid-argument";
+}
+
 async function callCommerce(endpoint, body) {
   const targetUrl = `${COMMERCE_BASE_URL}/${endpoint}`;
   let response;
@@ -71,7 +96,16 @@ async function callCommerce(endpoint, body) {
     throw new HttpsError("internal", "Commerce Bridge returned an unreadable response.");
   }
   if (!response.ok) {
-    throw new HttpsError("invalid-argument", data?.error || "Request rejected by Commerce.");
+    console.error(
+      `[adminStandaloneSubscriptionPayments] ${endpoint} returned ${response.status}:`,
+      JSON.stringify(data),
+    );
+    const code = httpsErrorCodeForStatus(response.status);
+    const message =
+      code === "internal"
+        ? "Commerce Bridge reported an internal error. Check Commerce Cloud Function logs for details."
+        : data?.error || data?.message || "Request rejected by Commerce.";
+    throw new HttpsError(code, message);
   }
   return data;
 }
