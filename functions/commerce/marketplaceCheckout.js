@@ -326,10 +326,24 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
       : undefined;
 
   // GUARD 1 — Commerce billing operational gate, checked BEFORE reserving
-  // an idempotency slot or calling Commerce at all: a non-operational store
-  // must fail fast and cheap, never consume a real idempotency attempt.
+  // an idempotency slot or calling Commerce at all: a non-operational
+  // Healthcare-origin pharmacy must fail fast and cheap, never consume a
+  // real idempotency attempt. Standalone Commerce orgId's checkout bug fix
+  // (2026-08-04) — resolveCommerceSubscriptionStatus only ever resolves a
+  // real status for an `hc_pharmacy_`-prefixed orgId (it returns null for
+  // any other orgId, since there is no medical_centers doc to read for a
+  // standalone org); isCommerceBillingOperational(null) is always false, so
+  // this guard used to reject EVERY standalone-org checkout unconditionally
+  // — confirmed live: a fully operational Demo Store (originType
+  // "commerce_only", subscription.status "active") still got a 400 here.
+  // Commerce's own isOrgOperationalForCheckout (marketplaceCheckout.ts) is
+  // already the authoritative, correctly-branching check for a standalone
+  // org (it reads that org's own `subscription` field directly) — this
+  // Healthcare-local guard was only ever meant as a pharmacy-specific fast-
+  // fail optimization, never a second source of truth, so it now only
+  // applies when orgId actually resolves to a Healthcare pharmacy.
   const commerceSubscriptionStatus = await resolveCommerceSubscriptionStatus(db, orgId);
-  if (!isCommerceBillingOperational(commerceSubscriptionStatus)) {
+  if (pharmacyOwnerUidFromOrgId(orgId) && !isCommerceBillingOperational(commerceSubscriptionStatus)) {
     throwLogged(
       "billing_gate",
       "failed-precondition",
@@ -570,11 +584,14 @@ exports.quoteMarketplaceCart = onCall({ region: "us-central1" }, async (request)
       ? patientProfile.phoneNumber
       : undefined;
 
-  // Same billing gate as placeMarketplaceOrder — a non-operational store
-  // must never even preview pricing (it can never actually be ordered
-  // from), and this is the fast/cheap check before any Odoo round trip.
+  // Same billing gate as placeMarketplaceOrder (see that function's own
+  // "Standalone Commerce orgId's checkout bug fix" comment for why this is
+  // now scoped to Healthcare-origin pharmacy orgIds only) — a non-
+  // operational Healthcare pharmacy must never even preview pricing; a
+  // standalone org's operational status is Commerce's own
+  // isOrgOperationalForCheckout to decide, not this Healthcare-local guard.
   const commerceSubscriptionStatus = await resolveCommerceSubscriptionStatus(db, orgId);
-  if (!isCommerceBillingOperational(commerceSubscriptionStatus)) {
+  if (pharmacyOwnerUidFromOrgId(orgId) && !isCommerceBillingOperational(commerceSubscriptionStatus)) {
     throwLogged(
       "billing_gate",
       "failed-precondition",
@@ -864,3 +881,4 @@ exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async 
 // — pure/near-pure guard logic, independent of the onCall wrapper.
 exports.isCommerceBillingOperational = isCommerceBillingOperational;
 exports.resolveCommerceSubscriptionStatus = resolveCommerceSubscriptionStatus;
+exports.pharmacyOwnerUidFromOrgId = pharmacyOwnerUidFromOrgId;

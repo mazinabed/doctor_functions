@@ -29,6 +29,7 @@ const db = admin.firestore();
 const {
   isCommerceBillingOperational,
   resolveCommerceSubscriptionStatus,
+  pharmacyOwnerUidFromOrgId,
 } = require('../functions/commerce/marketplaceCheckout');
 
 async function clearCollection(collectionPath) {
@@ -106,5 +107,44 @@ describe('resolveCommerceSubscriptionStatus (real Firestore reads)', () => {
   test('an orgId not matching the Healthcare-origin prefix resolves to null', async () => {
     const status = await resolveCommerceSubscriptionStatus(db, 'not_a_healthcare_org_id');
     expect(status).toBeNull();
+  });
+});
+
+// Standalone Commerce orgId checkout bug fix (2026-08-04) — confirmed live:
+// placeMarketplaceOrder/quoteMarketplaceCart's own GUARD 1 used to be
+// `if (!isCommerceBillingOperational(commerceSubscriptionStatus))`, which
+// always threw failed-precondition (HTTP 400) for ANY standalone orgId,
+// since resolveCommerceSubscriptionStatus can only ever resolve a real
+// status for an `hc_pharmacy_`-prefixed orgId — a fully operational
+// standalone Demo Store got rejected here despite Commerce's own
+// isOrgOperationalForCheckout (marketplaceCheckout.ts, the actual
+// authoritative check for that org type) correctly considering it
+// operational. Fixed by scoping GUARD 1 to
+// `pharmacyOwnerUidFromOrgId(orgId) && !isCommerceBillingOperational(...)`.
+// This suite has no emulator-backed way to invoke the full onCall handler
+// (see this file's own header), so — matching this describe block's own
+// established pattern of testing the real exported guard primitives
+// directly rather than duplicating their logic — these verify the exact
+// combined condition both GUARD 1 call sites now use.
+describe('GUARD 1 combined condition (pharmacyOwnerUidFromOrgId(orgId) && !isCommerceBillingOperational(...))', () => {
+  test('a standalone (non hc_pharmacy_) orgId never trips the guard, regardless of status', () => {
+    const orgId = 'OIH67W4vZjLPV7SVa3bd';
+    expect(pharmacyOwnerUidFromOrgId(orgId)).toBeNull();
+    const guardFires = Boolean(pharmacyOwnerUidFromOrgId(orgId)) && !isCommerceBillingOperational(null);
+    expect(guardFires).toBe(false);
+  });
+
+  test('a real, expired Healthcare pharmacy orgId still trips the guard (regression: pharmacy behavior unchanged)', () => {
+    const orgId = 'hc_pharmacy_uid_pharmacy_owner2';
+    expect(pharmacyOwnerUidFromOrgId(orgId)).toBe('uid_pharmacy_owner2');
+    const guardFires = Boolean(pharmacyOwnerUidFromOrgId(orgId)) && !isCommerceBillingOperational('expired');
+    expect(guardFires).toBe(true);
+  });
+
+  test('a real, active Healthcare pharmacy orgId does not trip the guard (regression: pharmacy behavior unchanged)', () => {
+    const orgId = 'hc_pharmacy_uid_pharmacy_owner1';
+    expect(pharmacyOwnerUidFromOrgId(orgId)).toBe('uid_pharmacy_owner1');
+    const guardFires = Boolean(pharmacyOwnerUidFromOrgId(orgId)) && !isCommerceBillingOperational('active');
+    expect(guardFires).toBe(false);
   });
 });
