@@ -101,200 +101,221 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
     });
   }
 
-  if (candidates.length === 0) {
-    return { stores: [], products: [], categories: [], hasMoreProducts: false };
-  }
+  // Early-return bug fix (2026-08-04) — both of this pharmacy path's own
+  // early returns (empty `candidates`, empty `billingEligible`) used to
+  // `return` the ENTIRE function, which meant the standalone merge block
+  // below was NEVER reached whenever a province/city had no (billing-
+  // eligible) Healthcare pharmacy — exactly Wasit/Kut's case, where Demo
+  // Store is the only candidate at all. Confirmed live: calling Commerce's
+  // getEligibleStandaloneStoresForHealthcare directly returned Demo Store
+  // correctly, but this function's own merged response was still empty,
+  // and functions:log showed no "Standalone Commerce Bridge" log line at
+  // all for that request — proof execution never reached that fetch.
+  // Fixed by scoping the pharmacy-specific work (candidate resolution,
+  // billing-eligibility filtering, the Commerce pharmacy-bridge call, and
+  // building `stores`/`products`/`categories`/`hasMoreProducts`) inside a
+  // labeled block that `break`s out early on either empty case WITHOUT
+  // returning from the function, so the always-additive standalone merge
+  // below still runs regardless. The pharmacy path's own logic/output is
+  // byte-for-byte unchanged; only the control flow around it changed.
+  let stores = [];
+  let products = [];
+  let categories = [];
+  let hasMoreProducts = false;
 
-  // Resolve each candidate owner's centerId, then batch-get medical_centers
-  // for billing status. Bounded by MAX_CANDIDATES — never an unbounded fan-out.
-  const centerIdByPharmacyId = new Map();
-  await Promise.all(
-    candidates.map(async (c) => {
-      const userSnap = await db.collection("users").doc(c.id).get();
-      centerIdByPharmacyId.set(c.id, userSnap.exists ? userSnap.data().centerId || null : null);
-    }),
-  );
-
-  const uniqueCenterIds = [...new Set([...centerIdByPharmacyId.values()].filter(Boolean))];
-  const billingStatusByCenterId = new Map();
-  await Promise.all(
-    uniqueCenterIds.map(async (centerId) => {
-      const centerSnap = await db.collection("medical_centers").doc(centerId).get();
-      billingStatusByCenterId.set(
-        centerId,
-        centerSnap.exists ? centerSnap.data().commerceSubscriptionStatus || null : null,
-      );
-    }),
-  );
-
-  const billingEligible = candidates.filter((c) => {
-    const centerId = centerIdByPharmacyId.get(c.id);
-    if (!centerId) return false;
-    return isCommerceBillingOperational(billingStatusByCenterId.get(centerId));
-  });
-
-  if (billingEligible.length === 0) {
-    return { stores: [], products: [], categories: [], hasMoreProducts: false };
-  }
-
-  const orgIds = billingEligible.map((c) => `${PHARMACY_ORG_ID_PREFIX}${c.id}`);
-
-  let commerceResponse;
-  try {
-    const response = await fetch(COMMERCE_STORE_DISCOVERY_BRIDGE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        orgIds,
-        ...(typeof productsLimit === "number" ? { productsLimit } : {}),
+  pharmacyPath: if (candidates.length > 0) {
+    // Resolve each candidate owner's centerId, then batch-get medical_centers
+    // for billing status. Bounded by MAX_CANDIDATES — never an unbounded fan-out.
+    const centerIdByPharmacyId = new Map();
+    await Promise.all(
+      candidates.map(async (c) => {
+        const userSnap = await db.collection("users").doc(c.id).get();
+        centerIdByPharmacyId.set(c.id, userSnap.exists ? userSnap.data().centerId || null : null);
       }),
+    );
+
+    const uniqueCenterIds = [...new Set([...centerIdByPharmacyId.values()].filter(Boolean))];
+    const billingStatusByCenterId = new Map();
+    await Promise.all(
+      uniqueCenterIds.map(async (centerId) => {
+        const centerSnap = await db.collection("medical_centers").doc(centerId).get();
+        billingStatusByCenterId.set(
+          centerId,
+          centerSnap.exists ? centerSnap.data().commerceSubscriptionStatus || null : null,
+        );
+      }),
+    );
+
+    const billingEligible = candidates.filter((c) => {
+      const centerId = centerIdByPharmacyId.get(c.id);
+      if (!centerId) return false;
+      return isCommerceBillingOperational(billingStatusByCenterId.get(centerId));
     });
-    if (!response.ok) {
-      console.error(
-        "[getActiveMarketplaceStores] Commerce Bridge returned status:",
-        response.status,
-      );
-      throw new HttpsError("internal", "Store data is temporarily unavailable.");
+
+    if (billingEligible.length === 0) break pharmacyPath;
+
+    const orgIds = billingEligible.map((c) => `${PHARMACY_ORG_ID_PREFIX}${c.id}`);
+
+    let commerceResponse;
+    try {
+      const response = await fetch(COMMERCE_STORE_DISCOVERY_BRIDGE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orgIds,
+          ...(typeof productsLimit === "number" ? { productsLimit } : {}),
+        }),
+      });
+      if (!response.ok) {
+        console.error(
+          "[getActiveMarketplaceStores] Commerce Bridge returned status:",
+          response.status,
+        );
+        throw new HttpsError("internal", "Store data is temporarily unavailable.");
+      }
+      commerceResponse = await response.json();
+    } catch (err) {
+      if (err instanceof HttpsError) throw err;
+      console.error("[getActiveMarketplaceStores] network error reaching Commerce Bridge:", err);
+      throw new HttpsError("internal", "Could not reach the Commerce Bridge.");
     }
-    commerceResponse = await response.json();
-  } catch (err) {
-    if (err instanceof HttpsError) throw err;
-    console.error("[getActiveMarketplaceStores] network error reaching Commerce Bridge:", err);
-    throw new HttpsError("internal", "Could not reach the Commerce Bridge.");
+
+    const commerceStoresByOrgId = new Map(
+      (Array.isArray(commerceResponse.stores) ? commerceResponse.stores : []).map((s) => [
+        s.orgId,
+        s,
+      ]),
+    );
+
+    // Kept for the products merge below — same source data as the stores
+    // array, just keyed by orgId instead of filtered/sliced to resultLimit,
+    // since a product's store name must resolve even if that store didn't
+    // make the (separately limited) Stores tab cut.
+    const storeDisplayByOrgId = new Map(
+      billingEligible.map((c) => [
+        `${PHARMACY_ORG_ID_PREFIX}${c.id}`,
+        {
+          facilityName_en: c.data.facilityName_en || null,
+          facilityName_ar: c.data.facilityName_ar || null,
+          facilityName_ku: c.data.facilityName_ku || null,
+        },
+      ]),
+    );
+
+    stores = billingEligible
+      .map((c) => {
+        const orgId = `${PHARMACY_ORG_ID_PREFIX}${c.id}`;
+        const commerceStore = commerceStoresByOrgId.get(orgId);
+        if (!commerceStore) return null;
+        return {
+          providerId: c.id,
+          orgId,
+          facilityName_en: c.data.facilityName_en || null,
+          facilityName_ar: c.data.facilityName_ar || null,
+          facilityName_ku: c.data.facilityName_ku || null,
+          imageUrl: c.data.imageUrl || null,
+          province_en: c.data.province_en || null,
+          province_ar: c.data.province_ar || null,
+          province_ku: c.data.province_ku || null,
+          city_en: c.data.city_en || null,
+          city_ar: c.data.city_ar || null,
+          city_ku: c.data.city_ku || null,
+          facilityAddress: c.data.facilityAddress || null,
+          productCount: commerceStore.productCount,
+          // Store Branding V1 (2026-07-22) — Commerce.storeBranding.ts is now
+          // the authoritative source for real storefront identity. Commerce
+          // no longer returns featuredImageUrl at all (that field used to be
+          // a sampled PRODUCT image standing in for a store banner — removed
+          // outright, never replaced, per the approved architecture decision
+          // that a product must never represent the merchant itself). Kept
+          // here as an always-null field, not deleted from this Healthcare
+          // response shape, purely so no existing Flutter field silently
+          // disappears from the wire contract.
+          featuredImageUrl: null,
+          logoUrl: commerceStore.logoUrl || null,
+          bannerUrl: commerceStore.bannerUrl || null,
+          tagline_en: commerceStore.tagline_en || null,
+          tagline_ar: commerceStore.tagline_ar || null,
+          tagline_ku: commerceStore.tagline_ku || null,
+          description_en: commerceStore.description_en || null,
+          description_ar: commerceStore.description_ar || null,
+          description_ku: commerceStore.description_ku || null,
+        };
+      })
+      .filter((s) => s !== null)
+      .slice(0, resultLimit);
+
+    // Cross-store Products/Categories tabs (Marketplace landing page) — same
+    // response, no second call. Products carry their store's display name
+    // (Healthcare-owned data Commerce never has) merged in here; Commerce
+    // only ever returns orgId for a product, never a store name.
+    products = (Array.isArray(commerceResponse.products) ? commerceResponse.products : [])
+      .map((p) => {
+        const store = storeDisplayByOrgId.get(p.orgId);
+        return {
+          orgId: p.orgId,
+          engineId: p.engineId,
+          sku: p.sku,
+          name_en: p.name_en,
+          name_ar: p.name_ar,
+          description_en: p.description_en ?? null,
+          description_ar: p.description_ar ?? null,
+          brandName: p.brandName ?? null,
+          categoryEngineIds: Array.isArray(p.categoryEngineIds) ? p.categoryEngineIds : [],
+          categoryKeys: Array.isArray(p.categoryKeys) ? p.categoryKeys : [],
+          categories: Array.isArray(p.categories) ? p.categories : [],
+          categoryEngineId: p.categoryEngineId ?? null,
+          categoryName_en: p.categoryName_en ?? null,
+          categoryName_ar: p.categoryName_ar ?? null,
+          displayPrice: p.displayPrice,
+          currencyName: p.currencyName ?? null,
+          isFeatured: Boolean(p.isFeatured),
+          availabilityBadge: p.availabilityBadge,
+          // Patient Marketplace gallery (2026-07-18) — imageUrl unchanged
+          // (existing consumers keep working); galleryImageUrls is new,
+          // already Primary-first/deduplicated/capped-at-3 by Commerce's own
+          // buildOutwardImageContract before it ever reaches this function —
+          // passed through as-is, not re-derived here.
+          imageUrl: p.imageUrl ?? null,
+          galleryImageUrls: Array.isArray(p.galleryImageUrls) ? p.galleryImageUrls : [],
+          storeName_en: store?.facilityName_en ?? null,
+          storeName_ar: store?.facilityName_ar ?? null,
+          storeName_ku: store?.facilityName_ku ?? null,
+        };
+      });
+
+    // Shared Marketplace Category Engine (2026-07-14) — categoryKey/
+    // parentCategoryKey is the stable identity the Patient App now
+    // filters/navigates on; engineId/odooCategoryId survive only for
+    // reference. This used to re-map to the legacy engineId-shaped fields
+    // only, silently dropping the new ones — fixed here.
+    categories = (Array.isArray(commerceResponse.categories) ? commerceResponse.categories : [])
+      .map((c) => ({
+        categoryKey: c.categoryKey,
+        parentCategoryKey: c.parentCategoryKey ?? null,
+        level: c.level ?? 0,
+        name_en: c.name_en,
+        name_ar: c.name_ar,
+        name_ku: c.name_ku ?? "",
+        iconKey: c.iconKey ?? null,
+        sortOrder: c.sortOrder ?? 0,
+        featured: Boolean(c.featured),
+        odooCategoryId: c.odooCategoryId ?? null,
+      }));
+
+    hasMoreProducts = commerceResponse.hasMoreProducts === true;
   }
-
-  const commerceStoresByOrgId = new Map(
-    (Array.isArray(commerceResponse.stores) ? commerceResponse.stores : []).map((s) => [
-      s.orgId,
-      s,
-    ]),
-  );
-
-  // Kept for the products merge below — same source data as the stores
-  // array, just keyed by orgId instead of filtered/sliced to resultLimit,
-  // since a product's store name must resolve even if that store didn't
-  // make the (separately limited) Stores tab cut.
-  const storeDisplayByOrgId = new Map(
-    billingEligible.map((c) => [
-      `${PHARMACY_ORG_ID_PREFIX}${c.id}`,
-      {
-        facilityName_en: c.data.facilityName_en || null,
-        facilityName_ar: c.data.facilityName_ar || null,
-        facilityName_ku: c.data.facilityName_ku || null,
-      },
-    ]),
-  );
-
-  const stores = billingEligible
-    .map((c) => {
-      const orgId = `${PHARMACY_ORG_ID_PREFIX}${c.id}`;
-      const commerceStore = commerceStoresByOrgId.get(orgId);
-      if (!commerceStore) return null;
-      return {
-        providerId: c.id,
-        orgId,
-        facilityName_en: c.data.facilityName_en || null,
-        facilityName_ar: c.data.facilityName_ar || null,
-        facilityName_ku: c.data.facilityName_ku || null,
-        imageUrl: c.data.imageUrl || null,
-        province_en: c.data.province_en || null,
-        province_ar: c.data.province_ar || null,
-        province_ku: c.data.province_ku || null,
-        city_en: c.data.city_en || null,
-        city_ar: c.data.city_ar || null,
-        city_ku: c.data.city_ku || null,
-        facilityAddress: c.data.facilityAddress || null,
-        productCount: commerceStore.productCount,
-        // Store Branding V1 (2026-07-22) — Commerce.storeBranding.ts is now
-        // the authoritative source for real storefront identity. Commerce
-        // no longer returns featuredImageUrl at all (that field used to be
-        // a sampled PRODUCT image standing in for a store banner — removed
-        // outright, never replaced, per the approved architecture decision
-        // that a product must never represent the merchant itself). Kept
-        // here as an always-null field, not deleted from this Healthcare
-        // response shape, purely so no existing Flutter field silently
-        // disappears from the wire contract.
-        featuredImageUrl: null,
-        logoUrl: commerceStore.logoUrl || null,
-        bannerUrl: commerceStore.bannerUrl || null,
-        tagline_en: commerceStore.tagline_en || null,
-        tagline_ar: commerceStore.tagline_ar || null,
-        tagline_ku: commerceStore.tagline_ku || null,
-        description_en: commerceStore.description_en || null,
-        description_ar: commerceStore.description_ar || null,
-        description_ku: commerceStore.description_ku || null,
-      };
-    })
-    .filter((s) => s !== null)
-    .slice(0, resultLimit);
-
-  // Cross-store Products/Categories tabs (Marketplace landing page) — same
-  // response, no second call. Products carry their store's display name
-  // (Healthcare-owned data Commerce never has) merged in here; Commerce
-  // only ever returns orgId for a product, never a store name.
-  const products = (Array.isArray(commerceResponse.products) ? commerceResponse.products : [])
-    .map((p) => {
-      const store = storeDisplayByOrgId.get(p.orgId);
-      return {
-        orgId: p.orgId,
-        engineId: p.engineId,
-        sku: p.sku,
-        name_en: p.name_en,
-        name_ar: p.name_ar,
-        description_en: p.description_en ?? null,
-        description_ar: p.description_ar ?? null,
-        brandName: p.brandName ?? null,
-        categoryEngineIds: Array.isArray(p.categoryEngineIds) ? p.categoryEngineIds : [],
-        categoryKeys: Array.isArray(p.categoryKeys) ? p.categoryKeys : [],
-        categories: Array.isArray(p.categories) ? p.categories : [],
-        categoryEngineId: p.categoryEngineId ?? null,
-        categoryName_en: p.categoryName_en ?? null,
-        categoryName_ar: p.categoryName_ar ?? null,
-        displayPrice: p.displayPrice,
-        currencyName: p.currencyName ?? null,
-        isFeatured: Boolean(p.isFeatured),
-        availabilityBadge: p.availabilityBadge,
-        // Patient Marketplace gallery (2026-07-18) — imageUrl unchanged
-        // (existing consumers keep working); galleryImageUrls is new,
-        // already Primary-first/deduplicated/capped-at-3 by Commerce's own
-        // buildOutwardImageContract before it ever reaches this function —
-        // passed through as-is, not re-derived here.
-        imageUrl: p.imageUrl ?? null,
-        galleryImageUrls: Array.isArray(p.galleryImageUrls) ? p.galleryImageUrls : [],
-        storeName_en: store?.facilityName_en ?? null,
-        storeName_ar: store?.facilityName_ar ?? null,
-        storeName_ku: store?.facilityName_ku ?? null,
-      };
-    });
-
-  // Shared Marketplace Category Engine (2026-07-14) — categoryKey/
-  // parentCategoryKey is the stable identity the Patient App now
-  // filters/navigates on; engineId/odooCategoryId survive only for
-  // reference. This used to re-map to the legacy engineId-shaped fields
-  // only, silently dropping the new ones — fixed here.
-  const categories = (Array.isArray(commerceResponse.categories) ? commerceResponse.categories : [])
-    .map((c) => ({
-      categoryKey: c.categoryKey,
-      parentCategoryKey: c.parentCategoryKey ?? null,
-      level: c.level ?? 0,
-      name_en: c.name_en,
-      name_ar: c.name_ar,
-      name_ku: c.name_ku ?? "",
-      iconKey: c.iconKey ?? null,
-      sortOrder: c.sortOrder ?? 0,
-      featured: Boolean(c.featured),
-      odooCategoryId: c.odooCategoryId ?? null,
-    }));
-
-  const hasMoreProducts = commerceResponse.hasMoreProducts === true;
 
   // Standalone Patient Marketplace Discovery, Stage 1 (2026-08-04) — a
   // SEPARATE, additive fetch merged in below. Everything above this point
   // (the existing Healthcare pharmacy public_pharmacy_providers query,
-  // billing-eligibility check, and Commerce enrichment call) is completely
+  // billing-eligibility check, and Commerce enrichment call) is otherwise
   // UNCHANGED — this is purely additive, and best-effort: if the standalone
   // fetch fails for any reason, pharmacy results are still returned exactly
-  // as before, never blocked by this addition.
+  // as before, never blocked by this addition. (The pharmacy path above is
+  // now reached-or-skipped via `pharmacyPath: if/break`, not `return`,
+  // specifically so it can never block this block from running — see this
+  // function's own "Early-return bug fix" comment above.)
   let standaloneStores = [];
   let standaloneProducts = [];
   let standaloneCategories = [];
