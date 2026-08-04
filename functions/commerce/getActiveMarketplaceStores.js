@@ -40,6 +40,18 @@ const fetch = require("node-fetch");
 const COMMERCE_STORE_DISCOVERY_BRIDGE_URL =
   "https://us-central1-trustydr-commerce.cloudfunctions.net/getActiveMarketplaceStoresForHealthcare";
 
+// Standalone Patient Marketplace Discovery, Stage 1 (2026-08-04) — a
+// SEPARATE, additive bridge endpoint for standalone (non-Healthcare-origin)
+// Commerce organizations that have explicitly opted into the "b2c"
+// marketplace channel (organizations/{orgId}.marketplaceChannels — see
+// trustydr-commerce/functions/src/lib/marketplaceEligibility.ts). This
+// endpoint does its OWN province/city filtering on the Commerce side
+// (Commerce owns provinceKey/cityKey/cityEn; Healthcare has no
+// public_pharmacy_providers-equivalent projection for these orgs and none
+// is created by this change — see this file's own merge logic below).
+const STANDALONE_STORE_DISCOVERY_BRIDGE_URL =
+  "https://us-central1-trustydr-commerce.cloudfunctions.net/getEligibleStandaloneStoresForHealthcare";
+
 const PHARMACY_ORG_ID_PREFIX = "hc_pharmacy_";
 const MAX_CANDIDATES = 50;
 
@@ -276,5 +288,168 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
 
   const hasMoreProducts = commerceResponse.hasMoreProducts === true;
 
-  return { stores, products, categories, hasMoreProducts };
+  // Standalone Patient Marketplace Discovery, Stage 1 (2026-08-04) — a
+  // SEPARATE, additive fetch merged in below. Everything above this point
+  // (the existing Healthcare pharmacy public_pharmacy_providers query,
+  // billing-eligibility check, and Commerce enrichment call) is completely
+  // UNCHANGED — this is purely additive, and best-effort: if the standalone
+  // fetch fails for any reason, pharmacy results are still returned exactly
+  // as before, never blocked by this addition.
+  let standaloneStores = [];
+  let standaloneProducts = [];
+  let standaloneCategories = [];
+  let standaloneHasMoreProducts = false;
+  try {
+    const standaloneResponse = await fetch(STANDALONE_STORE_DISCOVERY_BRIDGE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provinceKey,
+        cityEn,
+        ...(typeof productsLimit === "number" ? { productsLimit } : {}),
+      }),
+    });
+    if (standaloneResponse.ok) {
+      const standaloneData = await standaloneResponse.json();
+      const rawStandaloneStores = Array.isArray(standaloneData.stores) ? standaloneData.stores : [];
+
+      // Localized province/city display names, resolved from Healthcare's
+      // OWN `cities` collection — the exact same canonical location data
+      // standalone Commerce organizations already store provinceKey/cityEn
+      // against (C3). Every standalone store in this response shares the
+      // SAME provinceKey/cityEn as the request itself, so this is one
+      // lookup for the whole batch, never one per store, and it is never
+      // written anywhere — a read-only display-name resolution, not a new
+      // denormalized field on any document.
+      let provinceNameEn = null;
+      let provinceNameAr = null;
+      let provinceNameKu = null;
+      let cityNameEn = null;
+      let cityNameAr = null;
+      let cityNameKu = null;
+      if (rawStandaloneStores.length > 0) {
+        try {
+          const provinceSnap = await db.collection("cities").doc(provinceKey).get();
+          if (provinceSnap.exists) {
+            const provinceData = provinceSnap.data();
+            provinceNameEn = provinceData.name_en || null;
+            provinceNameAr = provinceData.lang?.ar || null;
+            provinceNameKu = provinceData.lang?.ku || null;
+            const subCities = Array.isArray(provinceData.subCities) ? provinceData.subCities : [];
+            const matchedCity = subCities.find(
+              (sc) => typeof sc.en === "string" && sc.en.trim().toLowerCase() === cityEn.trim().toLowerCase(),
+            );
+            if (matchedCity) {
+              cityNameEn = matchedCity.en || null;
+              cityNameAr = matchedCity.ar || null;
+              cityNameKu = matchedCity.ku || null;
+            }
+          }
+        } catch (err) {
+          console.error(
+            "[getActiveMarketplaceStores] cities lookup for standalone stores failed:",
+            err,
+          );
+        }
+      }
+
+      // Patient store model / name fallback (Stage 1, 2026-08-04) —
+      // Commerce's Organization schema has a single `name` field, never
+      // the localized facilityName_en/ar/ku triplet Healthcare pharmacy
+      // documents provide (see TrustyDr-pwa's MarketplaceStore model
+      // adaptation for the Flutter-side half of this same fallback).
+      // Setting the SAME name for all three here is the smallest
+      // backward-compatible choice — no new Commerce schema field, no
+      // localization redesign.
+      const standaloneNameByOrgId = new Map(
+        rawStandaloneStores.map((s) => [s.orgId, s.name || null]),
+      );
+
+      standaloneStores = rawStandaloneStores.map((s) => ({
+        providerId: s.orgId,
+        orgId: s.orgId,
+        facilityName_en: s.name || null,
+        facilityName_ar: s.name || null,
+        facilityName_ku: s.name || null,
+        imageUrl: null,
+        province_en: provinceNameEn,
+        province_ar: provinceNameAr,
+        province_ku: provinceNameKu,
+        city_en: cityNameEn,
+        city_ar: cityNameAr,
+        city_ku: cityNameKu,
+        facilityAddress: null,
+        productCount: s.productCount,
+        featuredImageUrl: null,
+        logoUrl: s.logoUrl || null,
+        bannerUrl: s.bannerUrl || null,
+        tagline_en: s.tagline_en || null,
+        tagline_ar: s.tagline_ar || null,
+        tagline_ku: s.tagline_ku || null,
+        description_en: s.description_en || null,
+        description_ar: s.description_ar || null,
+        description_ku: s.description_ku || null,
+      }));
+
+      standaloneProducts = (Array.isArray(standaloneData.products) ? standaloneData.products : []).map(
+        (p) => {
+          const name = standaloneNameByOrgId.get(p.orgId) || null;
+          return {
+            orgId: p.orgId,
+            engineId: p.engineId,
+            sku: p.sku,
+            name_en: p.name_en,
+            name_ar: p.name_ar,
+            description_en: p.description_en ?? null,
+            description_ar: p.description_ar ?? null,
+            brandName: p.brandName ?? null,
+            categoryEngineIds: Array.isArray(p.categoryEngineIds) ? p.categoryEngineIds : [],
+            categoryKeys: Array.isArray(p.categoryKeys) ? p.categoryKeys : [],
+            categories: Array.isArray(p.categories) ? p.categories : [],
+            categoryEngineId: p.categoryEngineId ?? null,
+            categoryName_en: p.categoryName_en ?? null,
+            categoryName_ar: p.categoryName_ar ?? null,
+            displayPrice: p.displayPrice,
+            currencyName: p.currencyName ?? null,
+            isFeatured: Boolean(p.isFeatured),
+            availabilityBadge: p.availabilityBadge,
+            imageUrl: p.imageUrl ?? null,
+            galleryImageUrls: Array.isArray(p.galleryImageUrls) ? p.galleryImageUrls : [],
+            storeName_en: name,
+            storeName_ar: name,
+            storeName_ku: name,
+          };
+        },
+      );
+
+      // Categories are a global, non-per-org taxonomy (marketplace_category_definitions,
+      // synced once by marketplaceSync.ts) — identical data regardless of
+      // which discovery endpoint returned it, so it is used only if the
+      // pharmacy path above returned none (never concatenated/duplicated).
+      standaloneCategories = Array.isArray(standaloneData.categories) ? standaloneData.categories : [];
+      standaloneHasMoreProducts = standaloneData.hasMoreProducts === true;
+    } else {
+      console.error(
+        "[getActiveMarketplaceStores] Standalone Commerce Bridge returned status:",
+        standaloneResponse.status,
+      );
+    }
+  } catch (err) {
+    console.error(
+      "[getActiveMarketplaceStores] network error reaching Standalone Commerce Bridge:",
+      err,
+    );
+  }
+
+  const mergedStores = [...stores, ...standaloneStores].slice(0, resultLimit);
+  const mergedProducts = [...products, ...standaloneProducts];
+  const mergedCategories = categories.length > 0 ? categories : standaloneCategories;
+  const mergedHasMoreProducts = hasMoreProducts || standaloneHasMoreProducts;
+
+  return {
+    stores: mergedStores,
+    products: mergedProducts,
+    categories: mergedCategories,
+    hasMoreProducts: mergedHasMoreProducts,
+  };
 });
