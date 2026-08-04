@@ -2261,6 +2261,20 @@ exports.adminDeleteMarketplaceCategory = adminDeleteMarketplaceCategory;
 exports.adminSyncMarketplaceCategoriesToOdoo = adminSyncMarketplaceCategoriesToOdoo;
 exports.adminBulkImportMarketplaceCategories = adminBulkImportMarketplaceCategories;
 
+// ─── TrustyDr Commerce Bridge — Standalone Subscription Billing (Admin) ────
+// Admin-only payment review (mydoctor_admin -> Healthcare -> Commerce) —
+// see adminStandaloneSubscriptionPayments.js's own header for the full
+// contract. Same admin gate and OIDC-authenticated Commerce call pattern
+// as adminMarketplaceCategories.js above.
+const {
+  adminListStandaloneSubscriptionPayments,
+  adminApproveStandaloneSubscriptionPayment,
+  adminRejectStandaloneSubscriptionPayment,
+} = require("./commerce/adminStandaloneSubscriptionPayments");
+exports.adminListStandaloneSubscriptionPayments = adminListStandaloneSubscriptionPayments;
+exports.adminApproveStandaloneSubscriptionPayment = adminApproveStandaloneSubscriptionPayment;
+exports.adminRejectStandaloneSubscriptionPayment = adminRejectStandaloneSubscriptionPayment;
+
 // ─── TrustyDr Commerce Bridge — Global Attribute Engine (Milestone 3) ──────
 // Admin-only CRUD (mydoctor_admin -> Healthcare -> Commerce) — see
 // adminMarketplaceAttributes.js's own header for the full contract. Same

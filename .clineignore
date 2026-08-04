@@ -1,0 +1,16 @@
+# DeepSeek/Cline evaluation - exclude sensitive files from AI context
+.env
+.env.*
+*.pem
+*.key
+*service-account*.json
+*firebase-adminsdk*.json
+credentials.json
+secrets/
+
+# Backups / exports / logs
+*.sql
+*.dump
+*backup*
+*.log
+logs/

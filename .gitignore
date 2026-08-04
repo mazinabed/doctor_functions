@@ -80,3 +80,10 @@ serviceAccount.json
 *firebase-adminsdk*.json
 serviceAccount.json
 *firebase-adminsdk*.json
+
+# DeepSeek/Cline eval prep - additional sensitive patterns
+*.pem
+*.key
+*service-account*.json
+credentials.json
+secrets/
