@@ -430,6 +430,13 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
         phone: s.phone || null,
         email: s.email || null,
         whatsapp: s.whatsapp || null,
+        // Address publication (2026-08-07) — streetAddress/locationNotes
+        // are ungated in publicBusinessProfileFromOrgDoc (always present
+        // when the merchant entered them, matching Healthcare's own
+        // unconditional clinicAddress/facilityAddress precedent), so this
+        // bridge passes them through the same as every other public field.
+        streetAddress: s.streetAddress || null,
+        locationNotes: s.locationNotes || null,
       }));
 
       standaloneProducts = (Array.isArray(standaloneData.products) ? standaloneData.products : []).map(
