@@ -410,6 +410,26 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
         description_en: s.description_en || null,
         description_ar: s.description_ar || null,
         description_ku: s.description_ku || null,
+        // Public Store Profile + Social Links (2026-08-05) — passed
+        // through as-is: Commerce's own getEligibleStandaloneStoresForHealthcare
+        // already gates website/socialLinks/phone/email/whatsapp server-side
+        // (publicBusinessProfileFromOrgDoc — null unless the merchant
+        // explicitly opted in via showSocialLinks/showPublicContact), so
+        // this bridge never re-derives or re-checks that gate — it only
+        // ever sees the already-public-safe projection, never the raw org
+        // document. `type` is the raw OrganizationType code (e.g.
+        // "retailer") — same field name Commerce's own org document and
+        // marketplaceBridge.ts's getMarketplaceCatalogForHealthcare use, so
+        // both bridge paths agree; localized display-name mapping is
+        // TrustyDr-pwa's own job (mirrors how doctor_portal's
+        // kStandaloneOrganizationTypes maps the same codes on the Commerce
+        // merchant side).
+        type: s.type || null,
+        website: s.website || null,
+        socialLinks: s.socialLinks || null,
+        phone: s.phone || null,
+        email: s.email || null,
+        whatsapp: s.whatsapp || null,
       }));
 
       standaloneProducts = (Array.isArray(standaloneData.products) ? standaloneData.products : []).map(
