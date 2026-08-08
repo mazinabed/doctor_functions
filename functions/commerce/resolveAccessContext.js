@@ -22,6 +22,7 @@
 
 const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
+const { getLegalConfig } = require("../legal/legalConfig");
 
 // Mirrors provider_profile_provider.dart's _normalizeStatus exactly.
 const VALID_STATUSES = ["legalConsent", "onboarding", "pending", "active", "suspended"];
@@ -36,6 +37,96 @@ function normalizeStatus(value) {
 function isoOrNull(timestamp) {
   return timestamp ? timestamp.toDate().toISOString() : null;
 }
+
+// Legal Consent Modernization (Phase 3 — Healthcare→Commerce bridge
+// entitlement). Read-only, resolved FRESH on every call directly from the
+// same facility doc Phase 2's acceptFacilityLegalAgreement writes to
+// (functions/legal/facilityLegalConsent.js) — this is NOT a second consent
+// system. Healthcare's legalAcceptances/legalHistory on the facility doc
+// remain the sole source of truth; only a computed current/not-current
+// boolean ever crosses the bridge, and it is never cached or duplicated
+// into Commerce (matches the same "the DECISION is always read fresh,
+// every call, never cached" discipline this file already uses for
+// pharmacyCommerceSubscriptionStatus).
+//
+// Resolved against the REAL facility doc per type — deliberately NOT
+// through the medical_centers/centerId indirection the pharmacy billing
+// fields above rely on. That indirection is known-unreliable for pharmacy/
+// lab owners (_createFacilityForProvider fails or orphans its target doc
+// for those two provider kinds — see the org-architecture audit), so this
+// bridge would silently under-report coverage for exactly the population
+// most likely to need it if it reused that path:
+//   medical_center → medical_centers/{centerId}   (ownerId field)
+//   pharmacy       → pharmacy_providers/{uid}      (identity == facility)
+//   lab            → diagnostic_providers/{uid}    (identity == facility)
+//
+// Scope note: only pharmacy owner/staff origination is a LIVE Commerce
+// activation path today (this file's own Milestone 2A header). Medical
+// center and lab resolution are included now so the bridge is correct and
+// complete per facility type the moment Commerce supports them, without a
+// second migration later — but are owner-only for now (no lab_members/
+// center members staff-delegation query added here yet, since no live
+// Commerce caller exercises that path).
+function buildLegalCoverage(facilityType, facilitySnap, currentVersion, acceptanceKey) {
+  if (!facilitySnap || !facilitySnap.exists) {
+    return { facilityType, current: false, version: currentVersion };
+  }
+  const acceptances = facilitySnap.data().legalAcceptances || {};
+  const record = acceptances[acceptanceKey];
+  const current = !!record && record.accepted === true && record.version === currentVersion;
+  return { facilityType, current, version: currentVersion };
+}
+
+async function resolveHealthcareLegalCoverage({
+  db,
+  uid,
+  role,
+  isPharmacyStaff,
+  pharmacyStaffPharmacyId,
+}) {
+  const legalConfig = await getLegalConfig();
+
+  if (role === "pharmacy_provider" || (isPharmacyStaff && pharmacyStaffPharmacyId)) {
+    const pharmacyId = role === "pharmacy_provider" ? uid : pharmacyStaffPharmacyId;
+    const snap = await db.collection("pharmacy_providers").doc(pharmacyId).get();
+    return buildLegalCoverage(
+      "pharmacy",
+      snap,
+      legalConfig.pharmacyAgreementVersion,
+      "pharmacyAgreement",
+    );
+  }
+
+  if (role === "diagnostic_provider") {
+    const snap = await db.collection("diagnostic_providers").doc(uid).get();
+    return buildLegalCoverage("lab", snap, legalConfig.labAgreementVersion, "labAgreement");
+  }
+
+  // Doctor / center-affiliated roles: resolve the center this caller OWNS,
+  // if any — a direct ownerId query, not the possibly-stale
+  // users/{uid}.centerId field, so this never depends on that field being
+  // populated correctly.
+  const ownedCenterSnap = await db
+    .collection("medical_centers")
+    .where("ownerId", "==", uid)
+    .limit(1)
+    .get();
+  if (!ownedCenterSnap.empty) {
+    return buildLegalCoverage(
+      "medical_center",
+      ownedCenterSnap.docs[0],
+      legalConfig.medicalCenterAgreementVersion,
+      "medicalCenterAgreement",
+    );
+  }
+
+  // No Healthcare-origin facility resolved for this caller — Commerce
+  // treats this as "no Healthcare legal coverage applies" and falls back
+  // to its own normal Commerce Merchant Agreement flow for that org.
+  return { facilityType: null, current: false, version: null };
+}
+
+exports.resolveHealthcareLegalCoverage = resolveHealthcareLegalCoverage;
 
 exports.resolveAccessContext = onRequest(
   { region: "us-central1", cors: false },
@@ -202,6 +293,14 @@ exports.resolveAccessContext = onRequest(
         }
       }
 
+      const healthcareLegalCoverage = await resolveHealthcareLegalCoverage({
+        db,
+        uid,
+        role,
+        isPharmacyStaff,
+        pharmacyStaffPharmacyId,
+      });
+
       res.status(200).json({
         uid,
         role,
@@ -224,6 +323,9 @@ exports.resolveAccessContext = onRequest(
         pharmacyCommerceNextBillingDate,
         pharmacyCommerceLastPaymentAt,
         pharmacyCommerceSubscriptionStatusSyncedAt,
+        healthcareLegalCoverageFacilityType: healthcareLegalCoverage.facilityType,
+        healthcareLegalCoverageCurrent: healthcareLegalCoverage.current,
+        healthcareLegalCoverageVersion: healthcareLegalCoverage.version,
       });
     } catch (err) {
       console.error("[resolveAccessContext] internal error:", err);
