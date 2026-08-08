@@ -14,13 +14,27 @@ const admin = require("firebase-admin");
 // bundle — this module only resolves version numbers; the backend never
 // stores or serves document text.
 
+// Legal content finalization (2026-08-08) — bumped from "v1" to "v2" for all
+// six documents: "v1" was the legacy flat single-flag consent system
+// (users/{uid}.legalAccepted / legalVersion, one shared boolean for
+// Terms+Privacy+Disclaimer combined, never independently versioned per
+// document). "v2" is the first real content published under this
+// per-document, server-authoritative version system — the finalized
+// Patient Terms, Provider Terms, Healthcare Privacy Policy, Medical Center
+// Agreement, Pharmacy Agreement, and Lab/Imaging Agreement (with their
+// embedded Commerce sections). Any existing user/facility — new or
+// returning — without a matching v2 acceptance record is correctly
+// re-gated by the existing version-comparison logic in legalConsent.js /
+// facilityLegalConsent.js; the legacy legalAccepted/legalVersion fields are
+// never read by this system at all, so they cannot satisfy a v2
+// requirement. No separate migration needed.
 const DEFAULT_LEGAL_CONFIG = {
-  patientTermsVersion: "v1",
-  providerTermsVersion: "v1",
-  privacyVersion: "v1",
-  medicalCenterAgreementVersion: "v1",
-  pharmacyAgreementVersion: "v1",
-  labAgreementVersion: "v1",
+  patientTermsVersion: "v2",
+  providerTermsVersion: "v2",
+  privacyVersion: "v2",
+  medicalCenterAgreementVersion: "v2",
+  pharmacyAgreementVersion: "v2",
+  labAgreementVersion: "v2",
 };
 
 // Firestore-absent default — lets every environment (a fresh emulator, a

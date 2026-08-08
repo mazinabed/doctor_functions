@@ -46,13 +46,13 @@ afterAll(async () => {
   await admin.app().delete();
 });
 
-test('LC-1 fresh patient with no platformConfig/legal doc defaults every version to v1 and is not current', async () => {
+test('LC-1 fresh patient with no platformConfig/legal doc defaults every version to v2 and is not current', async () => {
   await db.collection('users').doc('uid_lc1').set({ role: 'patient' });
 
   const { status } = await getAccountLegalStatus({ auth: { uid: 'uid_lc1' }, data: {} });
 
-  expect(status.terms.version).toBe('v1');
-  expect(status.privacy.version).toBe('v1');
+  expect(status.terms.version).toBe('v2');
+  expect(status.privacy.version).toBe('v2');
   expect(status.terms.current).toBe(false);
   expect(status.privacy.current).toBe(false);
 });
