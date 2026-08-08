@@ -2116,10 +2116,16 @@ const staffFunctions = require("./staff/activateStaffInvite");
 exports.activateStaffInvite = staffFunctions.activateStaffInvite;
 
 // Legal Consent Modernization (Phase 1 — account-level Patient + Provider
-// Terms/Privacy). Facility-level agreements are a later phase.
+// Terms/Privacy).
 const legalConsentFunctions = require("./legal/legalConsent");
 exports.getAccountLegalStatus = legalConsentFunctions.getAccountLegalStatus;
 exports.acceptAccountLegalDocument = legalConsentFunctions.acceptAccountLegalDocument;
+
+// Legal Consent Modernization (Phase 2 — facility-level agreements: Medical
+// Center / Pharmacy / Lab-Imaging).
+const facilityLegalConsentFunctions = require("./legal/facilityLegalConsent");
+exports.getFacilityLegalStatus = facilityLegalConsentFunctions.getFacilityLegalStatus;
+exports.acceptFacilityLegalAgreement = facilityLegalConsentFunctions.acceptFacilityLegalAgreement;
 
 const { lookupPatientByPhone } = require("./staff/lookupPatientByPhone");
 exports.lookupPatientByPhone = lookupPatientByPhone;

@@ -992,8 +992,12 @@ service cloud.firestore {
 
       // Billing fields permitted on creation (doctor or diagnostic provider sets up initial trial).
       // These same fields are blocked from updates by the owner below.
+      // legalAcceptances (Medical Center Agreement, Legal Consent Modernization
+      // Phase 2) is server-only in both directions — same discipline as
+      // users/{uid}.legalAcceptances — so it is blocked on create too.
       allow create: if (isDoctor() || isDiagnosticProvider())
-        && request.resource.data.ownerId == request.auth.uid;
+        && request.resource.data.ownerId == request.auth.uid
+        && !touchesLegalAcceptances();
 
       // accountLifecycle is controlled exclusively by Cloud Functions (admin SDK).
       // Phase 1B: commerce* fields added to the SAME protected list as the
@@ -1002,7 +1006,12 @@ service cloud.firestore {
       // are written only by the scheduled expireCenters job (admin SDK);
       // commerceTrialStart/commerceTrialEnds are written only by the
       // startCommerceTrial bridge function (admin SDK, owner-verified there).
+      // legalAcceptances (Medical Center Agreement) is server-only in BOTH
+      // directions, same as users/{uid}.legalAcceptances — the top-level
+      // !touchesLegalAcceptances() guard blocks it for the admin branch too,
+      // unlike the billing fields (which admin CAN write).
       allow update: if !touchesLifecycle()
+        && !touchesLegalAcceptances()
         && (isAdmin()
             || (isSignedIn()
                 && resource.data.ownerId == request.auth.uid
@@ -1107,6 +1116,19 @@ service cloud.firestore {
           || (isCenterAdminMember(centerId)
               && resource.data.get('uid', '') != request.auth.uid
               && resource.data.get('role', '') != 'center_admin');
+      }
+
+
+      // ── medical_centers/{centerId}/legalHistory/{historyId} ────────────────
+      //
+      // Legal Consent Modernization Phase 2 — append-only acceptance history
+      // for the Medical Center Agreement. Server-only in both directions,
+      // exactly matching users/{uid}/legalHistory: written only by
+      // acceptFacilityLegalAgreement (Admin SDK, bypasses these rules).
+      //
+      match /legalHistory/{historyId} {
+        allow read: if false;
+        allow write: if false;
       }
 
 
@@ -2103,18 +2125,34 @@ service cloud.firestore {
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.status == 'pending'
         && request.resource.data.isActive == false
-        && request.resource.data.isVerified == false;
+        && request.resource.data.isVerified == false
+        && !touchesLegalAcceptances();
 
-      allow update: if isAdmin()
-        || (isSignedIn()
-            && request.auth.uid == uid
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-                 'status', 'isVerified', 'isActive',
-                 'subscriptionStatus', 'trialStart', 'trialEnds',
-                 'verificationStatus', 'submittedAt'
-               ]));
+      // legalAcceptances (Lab/Imaging Agreement, Legal Consent Modernization
+      // Phase 2) is server-only in both directions — the top-level guard
+      // blocks the isAdmin() branch too, same discipline as
+      // users/{uid}.legalAcceptances.
+      allow update: if !touchesLegalAcceptances()
+        && (isAdmin()
+            || (isSignedIn()
+                && request.auth.uid == uid
+                && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                     'status', 'isVerified', 'isActive',
+                     'subscriptionStatus', 'trialStart', 'trialEnds',
+                     'verificationStatus', 'submittedAt'
+                   ])));
 
       allow delete: if isAdmin();
+
+      // ── diagnostic_providers/{labId}/legalHistory/{historyId} ──────────────
+      //
+      // Legal Consent Modernization Phase 2 — append-only acceptance history
+      // for the Lab/Imaging Agreement. Server-only in both directions.
+      //
+      match /legalHistory/{historyId} {
+        allow read: if false;
+        allow write: if false;
+      }
 
       // ── diagnostic_providers/{labId}/services/{serviceId} ─────────────────
       //
@@ -2276,18 +2314,34 @@ service cloud.firestore {
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.status == 'pending'
         && request.resource.data.isActive == false
-        && request.resource.data.isVerified == false;
+        && request.resource.data.isVerified == false
+        && !touchesLegalAcceptances();
 
-      allow update: if isAdmin()
-        || (isSignedIn()
-            && request.auth.uid == uid
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-                 'status', 'isVerified', 'isActive',
-                 'subscriptionStatus', 'trialStart', 'trialEnds',
-                 'verificationStatus', 'submittedAt'
-               ]));
+      // legalAcceptances (Pharmacy Agreement, Legal Consent Modernization
+      // Phase 2) is server-only in both directions — the top-level guard
+      // blocks the isAdmin() branch too, same discipline as
+      // users/{uid}.legalAcceptances.
+      allow update: if !touchesLegalAcceptances()
+        && (isAdmin()
+            || (isSignedIn()
+                && request.auth.uid == uid
+                && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                     'status', 'isVerified', 'isActive',
+                     'subscriptionStatus', 'trialStart', 'trialEnds',
+                     'verificationStatus', 'submittedAt'
+                   ])));
 
       allow delete: if isAdmin();
+
+      // ── pharmacy_providers/{pharmacyId}/legalHistory/{historyId} ───────────
+      //
+      // Legal Consent Modernization Phase 2 — append-only acceptance history
+      // for the Pharmacy Agreement. Server-only in both directions.
+      //
+      match /legalHistory/{historyId} {
+        allow read: if false;
+        allow write: if false;
+      }
 
       // ── pharmacy_providers/{pharmacyId}/services/{serviceId} ──────────────
       //
