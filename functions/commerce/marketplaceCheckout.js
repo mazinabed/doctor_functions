@@ -65,6 +65,7 @@ const { HttpsError, onCall } = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
+const { isFacilityLegalCurrent } = require("../legal/facilityLegalConsent");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
 
@@ -130,6 +131,29 @@ async function resolveCommerceSubscriptionStatus(db, orgId) {
   if (!centerSnap.exists) return null;
 
   return centerSnap.data().commerceSubscriptionStatus || null;
+}
+
+// Legal Consent Modernization (Healthcare Phase 4 — checkout relay
+// forwarding, 2026-08-08). Resolves the SAME pharmacyOwnerUid billing above
+// already keys off of, directly against
+// pharmacy_providers/{pharmacyOwnerUid}.legalAcceptances.pharmacyAgreement
+// via isFacilityLegalCurrent (functions/legal/facilityLegalConsent.js) —
+// the exact same read Phase 2's getFacilityLegalStatus already exposes to
+// the pharmacy owner's own status page, not a second, independently
+// computed source of truth. Deliberately does NOT go through
+// resolveCommerceSubscriptionStatus's medical_centers/centerId indirection
+// above — that path is known-unreliable for pharmacy owners (the
+// org-architecture audit; resolveAccessContext.js's own
+// resolveHealthcareLegalCoverage was built specifically to avoid it, and
+// this mirrors that same choice). Returns null for a non-pharmacy orgId —
+// same convention as resolveCommerceSubscriptionStatus — a standalone
+// Commerce org has no Healthcare facility to resolve and must never be
+// gated on this value; Commerce decides its own legal currency from its
+// own organizations/{orgId}.merchantAgreementAccepted field instead.
+async function resolvePharmacyLegalCoverageCurrent(db, orgId) {
+  const pharmacyOwnerUid = pharmacyOwnerUidFromOrgId(orgId);
+  if (!pharmacyOwnerUid) return null;
+  return isFacilityLegalCurrent(db, "pharmacy", pharmacyOwnerUid);
 }
 
 // Structured failure logging (permanent) — a network/parse failure reaching
@@ -352,6 +376,22 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     );
   }
 
+  // Legal Consent Modernization (Healthcare Phase 4) — same fast-fail
+  // discipline as GUARD 1 above, checked before reserving an idempotency
+  // slot or calling Commerce: a Healthcare-origin pharmacy whose Pharmacy
+  // Agreement is not current must never place an order. Fails CLOSED on
+  // any falsy value (false, null, undefined) — there is no fallback branch
+  // that treats "couldn't resolve" as "allowed."
+  const healthcareLegalCoverageCurrent = await resolvePharmacyLegalCoverageCurrent(db, orgId);
+  if (pharmacyOwnerUidFromOrgId(orgId) && !healthcareLegalCoverageCurrent) {
+    throwLogged(
+      "legal_coverage_gate",
+      "failed-precondition",
+      "This store's Healthcare Pharmacy Agreement is not current.",
+      { code: "store_legal_agreement_not_current", orgId },
+    );
+  }
+
   const orderRef = db.collection("marketplace_orders").doc(idempotencyKey);
 
   const shouldCallCommerce = await db.runTransaction(async (tx) => {
@@ -446,6 +486,15 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     // trust this bridge's fail-fast check alone — defense in depth against
     // a billing-status change in the narrow window between the two reads.
     pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
+    // Legal Consent Modernization (Healthcare Phase 4) — forwarded so
+    // Commerce's own authoritative re-check (GUARD 3, the function actually
+    // about to call Odoo) never has to trust this bridge's fast-fail check
+    // alone, exactly the same "defense in depth" reasoning as
+    // pharmacyCommerceSubscriptionStatus immediately above. null for a
+    // standalone Commerce orgId — Commerce computes its own legal currency
+    // for that population from organizations/{orgId}.merchantAgreementAccepted
+    // instead, never from this field.
+    healthcareLegalCoverageCurrent,
     couponCode: typeof couponCode === "string" && couponCode ? couponCode : undefined,
     quotationEngineId:
       typeof quotationEngineId === "string" && quotationEngineId ? quotationEngineId : undefined,
@@ -600,6 +649,20 @@ exports.quoteMarketplaceCart = onCall({ region: "us-central1" }, async (request)
     );
   }
 
+  // Legal Consent Modernization (Healthcare Phase 4) — same fast-fail as
+  // placeMarketplaceOrder's own guard (see that function's comment): a
+  // non-current Healthcare Pharmacy Agreement must block even a preview
+  // quote, not just the final order.
+  const healthcareLegalCoverageCurrent = await resolvePharmacyLegalCoverageCurrent(db, orgId);
+  if (pharmacyOwnerUidFromOrgId(orgId) && !healthcareLegalCoverageCurrent) {
+    throwLogged(
+      "legal_coverage_gate",
+      "failed-precondition",
+      "This store's Healthcare Pharmacy Agreement is not current.",
+      { code: "store_legal_agreement_not_current", orgId },
+    );
+  }
+
   const result = await callCommerce("quoteMarketplaceCartForHealthcare", {
     orgId,
     patientRef: patientId,
@@ -609,6 +672,8 @@ exports.quoteMarketplaceCart = onCall({ region: "us-central1" }, async (request)
     deliveryCarrierEngineId: deliveryCarrierEngineId || undefined,
     lang: resolveOdooLang(locale),
     pharmacyCommerceSubscriptionStatus: commerceSubscriptionStatus,
+    // See placeMarketplaceOrder's own comment on this same field.
+    healthcareLegalCoverageCurrent,
     couponCode: typeof couponCode === "string" && couponCode ? couponCode : undefined,
     quotationEngineId:
       typeof quotationEngineId === "string" && quotationEngineId ? quotationEngineId : undefined,
@@ -882,3 +947,4 @@ exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async 
 exports.isCommerceBillingOperational = isCommerceBillingOperational;
 exports.resolveCommerceSubscriptionStatus = resolveCommerceSubscriptionStatus;
 exports.pharmacyOwnerUidFromOrgId = pharmacyOwnerUidFromOrgId;
+exports.resolvePharmacyLegalCoverageCurrent = resolvePharmacyLegalCoverageCurrent;

@@ -41,6 +41,28 @@ const FACILITY_TYPES = {
   },
 };
 
+// Shared "is this facility's agreement current" resolver — the exact same
+// computation getFacilityLegalStatusHandler returns to a facility owner in
+// the Provider dashboard, reused verbatim (not recomputed differently) by
+// the Commerce marketplace-checkout bridge (marketplaceCheckout.js) so a
+// Healthcare-origin pharmacy's checkout gate reads the SAME facility
+// doc/version comparison as the facility's own status page — one
+// definition, never two independently-drifting ones. Read-only; never
+// writes legalAcceptances or legalHistory (those are exclusively written by
+// acceptFacilityLegalAgreementHandler above, via its own transaction).
+async function isFacilityLegalCurrent(db, facilityType, facilityId) {
+  const config = FACILITY_TYPES[facilityType];
+  const [legalConfig, facilitySnap] = await Promise.all([
+    getLegalConfig(),
+    db.collection(config.collection).doc(facilityId).get(),
+  ]);
+  if (!facilitySnap.exists) return false;
+  const acceptances = facilitySnap.data().legalAcceptances || {};
+  const record = acceptances[config.acceptanceKey];
+  return !!record && record.accepted === true && record.version === legalConfig[config.versionField];
+}
+exports.isFacilityLegalCurrent = isFacilityLegalCurrent;
+
 function isValidFacilityType(value) {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(FACILITY_TYPES, value);
 }
