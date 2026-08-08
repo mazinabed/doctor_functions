@@ -2115,6 +2115,12 @@ exports.updateDoctorRating = onDocumentWritten(
 const staffFunctions = require("./staff/activateStaffInvite");
 exports.activateStaffInvite = staffFunctions.activateStaffInvite;
 
+// Legal Consent Modernization (Phase 1 — account-level Patient + Provider
+// Terms/Privacy). Facility-level agreements are a later phase.
+const legalConsentFunctions = require("./legal/legalConsent");
+exports.getAccountLegalStatus = legalConsentFunctions.getAccountLegalStatus;
+exports.acceptAccountLegalDocument = legalConsentFunctions.acceptAccountLegalDocument;
+
 const { lookupPatientByPhone } = require("./staff/lookupPatientByPhone");
 exports.lookupPatientByPhone = lookupPatientByPhone;
 

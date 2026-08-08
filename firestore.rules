@@ -296,6 +296,18 @@ service cloud.firestore {
             .hasAny(['accountLifecycle']);
     }
 
+    // Legal Consent Modernization — legalAcceptances is written exclusively
+    // by acceptAccountLegalDocument (Cloud Functions, Admin SDK), same
+    // discipline as accountLifecycle above. No client path — patient app,
+    // doctor portal, or admin portal — may write this sub-object directly;
+    // the server always resolves version/timestamp itself.
+    function touchesLegalAcceptances() {
+      return resource == null
+        ? request.resource.data.keys().hasAny(['legalAcceptances'])
+        : request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['legalAcceptances']);
+    }
+
     // Core identity fields on an appointment that must never change after creation.
     // patientHealthSnapshot is immutable — health context is fixed at booking time.
     function appointmentCoreUnchanged() {
@@ -407,12 +419,15 @@ service cloud.firestore {
 
       allow create: if isSignedIn()
         && request.auth.uid == uid
+        && !touchesLegalAcceptances()
         && (!request.resource.data.keys().hasAny(['role'])
             || request.resource.data.role != 'admin');
 
-      // accountLifecycle is controlled exclusively by Cloud Functions (admin SDK).
-      // No client path — including admin portal — may write this sub-object.
+      // accountLifecycle and legalAcceptances are controlled exclusively by
+      // Cloud Functions (admin SDK). No client path — including admin
+      // portal — may write either sub-object.
       allow update: if !touchesLifecycle()
+        && !touchesLegalAcceptances()
         && (isAdmin()
             || (isSignedIn()
                 && request.auth.uid == uid
@@ -440,6 +455,17 @@ service cloud.firestore {
       // Patient may read/create/update/delete only their own token docs.
       match /fcmTokens/{tokenId} {
         allow read, write: if isSignedIn() && request.auth.uid == uid;
+      }
+
+      // ── users/{uid}/legalHistory ────────────────────────────────────────────
+      // Legal Consent Modernization — append-only acceptance history, written
+      // exclusively by acceptAccountLegalDocument (Cloud Functions, Admin SDK).
+      // Server-only in both directions, matching Commerce's own
+      // users/{uid}/legalHistory rule exactly — no client, including the
+      // account owner, may read or write these entries directly.
+      match /legalHistory/{historyId} {
+        allow read: if false;
+        allow write: if false;
       }
     }
 
@@ -1228,6 +1254,17 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /account_deletion_log/{eventId} {
+      allow read, write: if false;
+    }
+
+    // Legal Consent Modernization — the single authoritative source for
+    // current legal-document versions (patientTermsVersion,
+    // providerTermsVersion, privacyVersion, medicalCenterAgreementVersion,
+    // pharmacyAgreementVersion, labAgreementVersion), mirroring Commerce's
+    // own platformConfig/legal exactly. Read only by Cloud Functions via the
+    // Admin SDK (getLegalConfig()) before resolving/recording an acceptance
+    // — no client, including admin portal, ever reads or writes this.
+    match /platformConfig/{configId} {
       allow read, write: if false;
     }
 
