@@ -61,7 +61,7 @@ test('V2-0 the live default config is actually v2 for all six documents (sanity 
   });
 });
 
-test('V2-1 existing Patient with a legacy v1-era flat legalAccepted flag must still accept v2 (legacy field never satisfies it)', async () => {
+test('V2-1 existing Patient with a legacy v1-era flat legalAccepted flag must still accept v2 patientTerms (legacy field never satisfies it)', async () => {
   await db.collection('users').doc('uid_v2_existing_patient').set({
     role: 'patient',
     // The old flat single-flag system this replaces.
@@ -74,22 +74,22 @@ test('V2-1 existing Patient with a legacy v1-era flat legalAccepted flag must st
     data: {},
   });
 
-  expect(status.terms.current).toBe(false);
-  expect(status.terms.version).toBe('v2');
+  expect(status.patientTerms.current).toBe(false);
+  expect(status.patientTerms.version).toBe('v2');
   expect(status.privacy.current).toBe(false);
 });
 
-test('V2-2 new Patient (no user doc at all yet) must accept v2', async () => {
+test('V2-2 new Patient (no user doc at all yet) must accept v2 patientTerms', async () => {
   const { status } = await getAccountLegalStatus({
     auth: { uid: 'uid_v2_new_patient' },
     data: {},
   });
 
-  expect(status.terms.current).toBe(false);
-  expect(status.terms.version).toBe('v2');
+  expect(status.patientTerms.current).toBe(false);
+  expect(status.patientTerms.version).toBe('v2');
 });
 
-test('V2-3 existing Provider (doctor) with a legacy v1-era flag must still accept v2', async () => {
+test('V2-3 existing Provider (doctor) with a legacy v1-era flag must still accept v2 providerTerms', async () => {
   await db.collection('users').doc('uid_v2_existing_doctor').set({
     role: 'doctor',
     legalAccepted: true,
@@ -101,18 +101,18 @@ test('V2-3 existing Provider (doctor) with a legacy v1-era flag must still accep
     data: {},
   });
 
-  expect(status.terms.current).toBe(false);
-  expect(status.terms.version).toBe('v2');
+  expect(status.providerTerms.current).toBe(false);
+  expect(status.providerTerms.version).toBe('v2');
 });
 
-test('V2-4 new Provider (no user doc at all yet) must accept v2', async () => {
+test('V2-4 new Provider (no user doc at all yet) must accept v2 providerTerms', async () => {
   const { status } = await getAccountLegalStatus({
     auth: { uid: 'uid_v2_new_doctor' },
     data: {},
   });
 
-  expect(status.terms.current).toBe(false);
-  expect(status.terms.version).toBe('v2');
+  expect(status.providerTerms.current).toBe(false);
+  expect(status.providerTerms.version).toBe('v2');
 });
 
 test('V2-5 existing Medical Center — the authorized representative (owner) must accept the applicable v2 agreement', async () => {
@@ -166,7 +166,7 @@ test('V2-6 acceptance survives logout/login: a fresh, independent status check a
 
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_survive' },
-    data: { documentType: 'terms' },
+    data: { documentType: 'patientTerms' },
   });
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_survive' },
@@ -181,7 +181,7 @@ test('V2-6 acceptance survives logout/login: a fresh, independent status check a
     data: {},
   });
 
-  expect(status.terms.current).toBe(true);
+  expect(status.patientTerms.current).toBe(true);
   expect(status.privacy.current).toBe(true);
 });
 
@@ -190,7 +190,7 @@ test('V2-7 v2-current acceptance does not repeatedly prompt: repeated status che
 
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_noprompt' },
-    data: { documentType: 'terms' },
+    data: { documentType: 'providerTerms' },
   });
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_noprompt' },
@@ -202,7 +202,7 @@ test('V2-7 v2-current acceptance does not repeatedly prompt: repeated status che
       auth: { uid: 'uid_v2_noprompt' },
       data: {},
     });
-    expect(status.terms.current).toBe(true);
+    expect(status.providerTerms.current).toBe(true);
     expect(status.privacy.current).toBe(true);
   }
 });
@@ -212,7 +212,7 @@ test('V2-8 a simulated v3 bump of ONE document makes only that document stale, t
 
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_partial_bump' },
-    data: { documentType: 'terms' },
+    data: { documentType: 'patientTerms' },
   });
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_partial_bump' },
@@ -224,7 +224,7 @@ test('V2-8 a simulated v3 bump of ONE document makes only that document stale, t
     auth: { uid: 'uid_v2_partial_bump' },
     data: {},
   });
-  expect(before.status.terms.current).toBe(true);
+  expect(before.status.patientTerms.current).toBe(true);
   expect(before.status.privacy.current).toBe(true);
 
   // Simulate publishing v3 of Patient Terms ONLY — Privacy stays at v2.
@@ -241,8 +241,8 @@ test('V2-8 a simulated v3 bump of ONE document makes only that document stale, t
     auth: { uid: 'uid_v2_partial_bump' },
     data: {},
   });
-  expect(after.status.terms.current).toBe(false);
-  expect(after.status.terms.version).toBe('v3');
+  expect(after.status.patientTerms.current).toBe(false);
+  expect(after.status.patientTerms.version).toBe('v3');
   expect(after.status.privacy.current).toBe(true);
   expect(after.status.privacy.version).toBe('v2');
 });
@@ -288,7 +288,7 @@ test('V2-9 old acceptance remains in history after a version bump and re-accepta
 
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_history' },
-    data: { documentType: 'terms', locale: 'en' },
+    data: { documentType: 'patientTerms', locale: 'en' },
   });
 
   await db.collection('platformConfig').doc('legal').set({
@@ -302,7 +302,7 @@ test('V2-9 old acceptance remains in history after a version bump and re-accepta
 
   await acceptAccountLegalDocument({
     auth: { uid: 'uid_v2_history' },
-    data: { documentType: 'terms', locale: 'ar' },
+    data: { documentType: 'patientTerms', locale: 'ar' },
   });
 
   const historySnap = await db
@@ -315,7 +315,7 @@ test('V2-9 old acceptance remains in history after a version bump and re-accepta
 
   // The live field always reflects only the most recent acceptance.
   const userSnap = await db.collection('users').doc('uid_v2_history').get();
-  expect(userSnap.data().legalAcceptances.terms.version).toBe('v3');
+  expect(userSnap.data().legalAcceptances.patientTerms.version).toBe('v3');
 });
 
 test('V2-9b old facility acceptance history is preserved the same way', async () => {
