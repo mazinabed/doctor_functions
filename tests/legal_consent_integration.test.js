@@ -172,3 +172,73 @@ test('LC-7 rejects an unauthenticated call', async () => {
     acceptAccountLegalDocument({ auth: null, data: { documentType: 'terms' } })
   ).rejects.toThrow();
 });
+
+test(
+  'LC-8 documents the account-type contract: a users/{uid} doc with no role ' +
+    'field at all (the confirmed pre-fix TrustyDr-pwa patient signup shape — ' +
+    'see database_service.dart createUserDocument()/needsLegalAcceptanceFor(), ' +
+    'which never wrote role until this investigation) is NOT treated as a ' +
+    'patient and is silently stamped with providerTermsVersion instead of ' +
+    'patientTermsVersion. This is intentional backend behavior (unset/unknown ' +
+    'role defaults to the non-patient population, matching ' +
+    'resolveAccessContext.js) — the actual defect was the missing client-side ' +
+    "write, fixed in TrustyDr-pwa's database_service.dart, not this resolution " +
+    'rule. Frozen here so a future change to this default does not silently ' +
+    're-break patient version attribution the other direction.',
+  async () => {
+    await db.collection('platformConfig').doc('legal').set({
+      patientTermsVersion: 'v3',
+      providerTermsVersion: 'v5',
+      privacyVersion: 'v2',
+    });
+    // Deliberately no `role` field — the real, confirmed production shape of
+    // every patient doc written before this fix.
+    await db.collection('users').doc('uid_lc8').set({
+      uid: 'uid_lc8',
+      username: 'Test Patient',
+      email: 'patient@example.com',
+      phoneNumber: '+9647700000000',
+      profileImage: '',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const result = await acceptAccountLegalDocument({
+      auth: { uid: 'uid_lc8' },
+      data: { documentType: 'terms' },
+    });
+    expect(result.version).toBe('v5');
+
+    const { status } = await getAccountLegalStatus({ auth: { uid: 'uid_lc8' }, data: {} });
+    expect(status.terms.version).toBe('v5');
+  },
+);
+
+test(
+  'LC-9 the fixed patient signup shape (role: "patient" present) correctly ' +
+    'resolves patientTermsVersion, distinct from LC-8',
+  async () => {
+    await db.collection('platformConfig').doc('legal').set({
+      patientTermsVersion: 'v3',
+      providerTermsVersion: 'v5',
+      privacyVersion: 'v2',
+    });
+    await db.collection('users').doc('uid_lc9').set({
+      uid: 'uid_lc9',
+      username: 'Test Patient',
+      email: 'patient@example.com',
+      phoneNumber: '+9647700000000',
+      profileImage: '',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      role: 'patient',
+    });
+
+    const result = await acceptAccountLegalDocument({
+      auth: { uid: 'uid_lc9' },
+      data: { documentType: 'terms' },
+    });
+    expect(result.version).toBe('v3');
+
+    const { status } = await getAccountLegalStatus({ auth: { uid: 'uid_lc9' }, data: {} });
+    expect(status.terms.version).toBe('v3');
+  },
+);
