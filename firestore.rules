@@ -167,6 +167,68 @@ service cloud.firestore {
         && request.resource.data.get('legalAccepted', false) == true;
     }
 
+    // Legal Consent V2 — resolves the CURRENT version for a given
+    // platformConfig/legal field, mirroring legalConfig.js's getLegalConfig()
+    // exactly: read the live platformConfig/legal doc when it has been
+    // published, else fall back to the SAME hardcoded default ('v2') that
+    // module ships as DEFAULT_LEGAL_CONFIG for an environment where it
+    // hasn't been published yet. Keep this fallback in sync with
+    // DEFAULT_LEGAL_CONFIG in doctor_functions/functions/legal/legalConfig.js
+    // if that default is ever bumped.
+    function currentLegalVersion(field) {
+      return exists(/databases/$(database)/documents/platformConfig/legal)
+        ? get(/databases/$(database)/documents/platformConfig/legal).data.get(field, 'v2')
+        : 'v2';
+    }
+
+    // True when the caller's OWN account-level Provider Terms + Privacy
+    // acceptance (users/{uid}.legalAcceptances, written exclusively by
+    // acceptAccountLegalDocument — Cloud Functions, Admin SDK; see
+    // legalConsent.js) is CURRENT for both documents. Mirrors
+    // getAccountLegalStatusHandler's own
+    // `record.accepted === true && record.version === currentVersion` check
+    // and ProviderAccountLegalStatus.isFullyCurrent
+    // (access_context_provider.dart) exactly, so this rule can never
+    // disagree with what the client's own legal gate already decided.
+    function hasCurrentProviderLegalAcceptance() {
+      let acceptances = exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('legalAcceptances', {})
+        : {};
+      let providerTerms = acceptances.get('providerTerms', {});
+      let privacy = acceptances.get('privacy', {});
+      return providerTerms.get('accepted', false) == true
+        && providerTerms.get('version', '') == currentLegalVersion('providerTermsVersion')
+        && privacy.get('accepted', false) == true
+        && privacy.get('version', '') == currentLegalVersion('privacyVersion');
+    }
+
+    // Legal Consent V2 lifecycle transition (2026-08-09 shared-onboarding
+    // regression fix). V2 new-signup routing (access_context.dart's
+    // requiredLifecycleRoute, commit 4cac7d4) sends a provider whose account
+    // is fully V2-current straight to /doctor/onboarding without ever
+    // touching doctors/{uid} — legalAccepted is a v1-only field the current
+    // flow has no reason to write. isLegalConsentTransition() above (the
+    // legacy v1 exemption) is intentionally left untouched and still applies
+    // to any old/in-flight account that legitimately carries legalAccepted
+    // from before this fix; this is the parallel V2-native path for every
+    // account gated by the current legal system. Explicitly excludes every
+    // other privileged field from the same write (matching
+    // isConvertedToProviderTransition()'s own discipline) so a client cannot
+    // smuggle isActive/canBook/subscriptionStatus/etc. into the same update
+    // that legitimately flips status — V2 legal acceptance authorizes ONLY
+    // this one status transition, nothing else.
+    function isV2LegalConsentTransition() {
+      return resource.data.status == 'legalConsent'
+        && request.resource.data.status == 'onboarding'
+        && hasCurrentProviderLegalAcceptance()
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+             'isPaidUser', 'subscriptionStatus', 'subscriptionPlan',
+             'nextBillingDate', 'trialStart', 'trialEnds',
+             'isActive', 'isVerified', 'verificationStatus',
+             'canBook', 'canCall'
+           ]);
+    }
+
     // Doctor submits completed onboarding for admin review.
     // Allowed ONLY when transitioning onboarding → pending and all privilege
     // flags are explicitly set to false (no self-escalation possible).
@@ -200,6 +262,7 @@ service cloud.firestore {
 
     function touchesDoctorAdminFields() {
       return !isLegalConsentTransition()
+        && !isV2LegalConsentTransition()
         && !isOnboardingSubmitTransition()
         && !isConvertedToProviderTransition()
         && request.resource.data.diff(resource.data).affectedKeys().hasAny([
