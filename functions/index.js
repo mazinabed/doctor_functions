@@ -2328,6 +2328,23 @@ exports.cancelMarketplaceOrder = cancelMarketplaceOrder;
 exports.getMarketplaceOrderStatus = getMarketplaceOrderStatus;
 exports.getMarketplaceDeliveryMethods = getMarketplaceDeliveryMethods;
 
+// ─── Product Ratings & Reviews, Phase 3 (2026-08-10) ───────────────────────
+// Patient-App-facing, Healthcare -> Commerce, same relay shape as the
+// Checkout bridge immediately above — see marketplaceProductReview.js's own
+// header for the full contract. getProductReviews is the one public/
+// unauthenticated exception (matches getMarketplaceProductDetail's own
+// public-browse posture).
+const {
+  submitProductReview,
+  withdrawProductReview,
+  getMyProductReview,
+  getProductReviews,
+} = require("./commerce/marketplaceProductReview");
+exports.submitProductReview = submitProductReview;
+exports.withdrawProductReview = withdrawProductReview;
+exports.getMyProductReview = getMyProductReview;
+exports.getProductReviews = getProductReviews;
+
 // ─── Pharmacy Operations Dashboard (Phase 1, Increment 2) — order actions ──
 // Accept/Reject/Start Preparing/Mark Ready for Pickup/Mark Out for
 // Delivery/Mark Completed — see pharmacyOrderActions.js's own header for
