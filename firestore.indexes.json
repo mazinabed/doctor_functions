@@ -9,6 +9,14 @@
       ]
     },
     {
+      "collectionGroup": "marketplace_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "order.engineId", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "pharmacy_providers",
       "queryScope": "COLLECTION",
       "fields": [

@@ -2382,3 +2382,15 @@ exports.assignPharmacyOrderDeliveryPerson = assignPharmacyOrderDeliveryPerson;
 // distinct from 'cancelled' — see pharmacyOrderActions.js's own header
 // comment on markPharmacyOrderDeliveryFailed.
 exports.markPharmacyOrderDeliveryFailed = markPharmacyOrderDeliveryFailed;
+
+// ─── Standalone Commerce -> Healthcare Fulfillment Projection Bridge ───────
+// (2026-08-10) — receives standalone-org fulfillment transitions from
+// trustydr-commerce's own durable outbox/retry sweep (marketplaceOrdersForOrg.ts
+// + healthcareFulfillmentOutbox.ts) and projects them into this project's
+// marketplace_orders, reusing the exact fulfillmentStatus/
+// fulfillmentStatusHistory shape pharmacyOrderActions.js already writes for
+// the Healthcare-linked path. IAM-invoker-restricted to Commerce's own
+// runtime service account — see receiveStandaloneFulfillmentSync.js's own
+// header for the full security rationale.
+const { receiveStandaloneFulfillmentSync } = require("./commerce/receiveStandaloneFulfillmentSync");
+exports.receiveStandaloneFulfillmentSync = receiveStandaloneFulfillmentSync;
