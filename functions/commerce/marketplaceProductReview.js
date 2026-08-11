@@ -6,25 +6,26 @@
 // quoteMarketplaceCart: Firebase authentication is authoritative HERE —
 // patientId is always request.auth.uid, never a client-submitted value —
 // and this function forwards that server-derived identity + the patient's
-// own server-resolved profile fields (name/phone) to Commerce over a plain
-// HTTPS POST, mirroring marketplaceCheckout.js's callCommerce() exactly
-// (see that file's own header comment for the Healthcare<->Commerce
-// direction/trust convention this repeats). getProductReviews is the one
-// exception — public/unauthenticated, matching getMarketplaceProductDetail.js's
-// own public-browse posture, since a product's review list is non-sensitive
-// general content, not patient-identity-bound.
+// own server-resolved profile fields (name/phone) to Commerce. getProductReviews
+// is the one exception — public/unauthenticated, matching
+// getMarketplaceProductDetail.js's own public-browse posture, since a
+// product's review list is non-sensitive general content, not
+// patient-identity-bound.
 //
-// Scope note: the Healthcare<->Commerce bridge's OWN caller-authentication
-// mechanism (or lack of one) is a separate, already-flagged, explicitly
-// out-of-scope question for this milestone (see docs/progress/
-// PRODUCT_RATINGS_REVIEWS_PROGRESS.md's Phase 3 completion notes) — this
-// file deliberately matches the EXISTING marketplaceCheckout.js pattern
-// byte-for-byte in that respect, not a new or different one.
+// Healthcare<->Commerce Bridge Security Hardening, Stage 1 (2026-08-11):
+// submitProductReview/withdrawProductReview/getMyProductReview now call
+// Commerce via callCommerceAuthenticated (lib/commerceAuth.js), the same
+// Google OIDC identity-token mechanism adminMarketplaceCategories.js has
+// used since the admin bridge's own 2026-07-18 fix — the bridge's own
+// caller-authentication gap flagged in earlier phases is what this closes.
+// getProductReviews stays on the plain, unauthenticated fetch below — it is
+// public-by-design and must not be converted.
 
 const { HttpsError, onCall } = require("firebase-functions/v2/https");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
+const { getCommerceAuthHeaders } = require("./lib/commerceAuth");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
 
@@ -40,19 +41,16 @@ function resolveOdooLang(locale) {
 }
 
 // Structured failure logging (permanent) — same shape as
-// marketplaceCheckout.js's own callCommerce/throwLogged (error.cause
-// preserved, `where` tags the exact call site). Duplicated here rather
-// than imported: marketplaceCheckout.js does not export these helpers, and
-// this milestone's instructions are explicit — do not refactor/modify the
-// existing Marketplace relay file to extract shared helpers out of it.
-async function callCommerce(endpoint, body) {
+// marketplaceCheckout.js's own callCommerceRaw/throwLogged (error.cause
+// preserved, `where` tags the exact call site).
+async function callCommerceRaw(endpoint, body, headers) {
   const url = `${COMMERCE_BASE_URL}/${endpoint}`;
 
   let response;
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -83,6 +81,30 @@ async function callCommerce(endpoint, body) {
     throw new HttpsError("internal", "Commerce Bridge returned an unreadable response.");
   }
   return { ok: response.ok, status: response.status, data };
+}
+
+// Healthcare<->Commerce Bridge Security Hardening, Stage 1 (2026-08-11).
+// Every call site in this file targets a patient-identity-bound Commerce
+// endpoint (submit/withdraw/get-my-review), so this is the only variant
+// used here — see marketplaceCheckout.js's own callCommerceAuthenticated
+// for the full rationale (same lib/commerceAuth.js mechanism).
+async function callCommerceAuthenticated(endpoint, body) {
+  const url = `${COMMERCE_BASE_URL}/${endpoint}`;
+  let headers;
+  try {
+    headers = await getCommerceAuthHeaders(url);
+  } catch (err) {
+    logger.error("marketplaceProductReview bridge call failed", {
+      error: String(err),
+      stack: err && err.stack,
+      message: err && err.message,
+      where: "callCommerceAuthenticated.oidc_token_acquisition",
+      endpoint,
+      url,
+    });
+    throw new HttpsError("internal", "Could not authenticate with the Commerce Bridge.");
+  }
+  return callCommerceRaw(endpoint, body, headers);
 }
 
 function throwLogged(where, code, message, details, err) {
@@ -175,7 +197,7 @@ exports.submitProductReview = onCall({ region: "us-central1" }, async (request) 
   const db = admin.firestore();
   const { resolvedName, resolvedPhone } = await resolvePatientProfile(db, patientId);
 
-  const result = await callCommerce("submitProductReviewForHealthcare", {
+  const result = await callCommerceAuthenticated("submitProductReviewForHealthcare", {
     engineId,
     patientRef: patientId,
     patientName: resolvedName,
@@ -206,7 +228,7 @@ exports.withdrawProductReview = onCall({ region: "us-central1" }, async (request
   const db = admin.firestore();
   const { resolvedName, resolvedPhone } = await resolvePatientProfile(db, patientId);
 
-  const result = await callCommerce("withdrawProductReviewForHealthcare", {
+  const result = await callCommerceAuthenticated("withdrawProductReviewForHealthcare", {
     engineId,
     patientRef: patientId,
     patientName: resolvedName,
@@ -235,7 +257,7 @@ exports.getMyProductReview = onCall({ region: "us-central1" }, async (request) =
     throwLogged("validate_request_shape", "invalid-argument", "engineId is required.", { engineId: engineId || null });
   }
 
-  const result = await callCommerce("getMyProductReviewForHealthcare", {
+  const result = await callCommerceAuthenticated("getMyProductReviewForHealthcare", {
     engineId,
     patientRef: patientId,
   });

@@ -66,6 +66,7 @@ const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
 const { isFacilityLegalCurrent } = require("../legal/facilityLegalConsent");
+const { getCommerceAuthHeaders } = require("./lib/commerceAuth");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
 
@@ -161,14 +162,14 @@ async function resolvePharmacyLegalCoverageCurrent(db, orgId) {
 // trace. error.cause (Node's native fetch/undici nests ECONNREFUSED/
 // ENOTFOUND/ETIMEDOUT etc. there) is preserved explicitly — the previous
 // unstructured `console.error(string, err)` here lost it in practice.
-async function callCommerce(endpoint, body) {
+async function callCommerceRaw(endpoint, body, headers) {
   const url = `${COMMERCE_BASE_URL}/${endpoint}`;
 
   let response;
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -199,6 +200,44 @@ async function callCommerce(endpoint, body) {
     throw new HttpsError("internal", "Commerce Bridge returned an unreadable response.");
   }
   return { ok: response.ok, status: response.status, data };
+}
+
+// Public-by-design Commerce endpoints only (see lib/commerceAuth.js's
+// PUBLIC_COMMERCE_ENDPOINTS) — no identity to prove, no OIDC token minted.
+// getMarketplaceDeliveryMethodsForHealthcare is this file's only caller of
+// this variant; every other endpoint below is patient-identity-bound or
+// mutates a real order and must use callCommerceAuthenticated instead.
+async function callCommerce(endpoint, body) {
+  return callCommerceRaw(endpoint, body, { "Content-Type": "application/json" });
+}
+
+// Healthcare<->Commerce Bridge Security Hardening, Stage 1 (2026-08-11).
+// Mints a real Google OIDC identity token (lib/commerceAuth.js,
+// audience = this exact endpoint's URL) and attaches it as a Bearer token,
+// proving to Commerce's Cloud Run IAM that this request genuinely came from
+// Healthcare's own runtime service account — the same mechanism
+// adminMarketplaceCategories.js already uses for the admin bridge. `body`'s
+// patientRef/patientId fields are unaffected: they still originate
+// exclusively from request.auth.uid at each onCall boundary below, never
+// from client input — this only proves WHO is calling Commerce, not WHICH
+// patient the call is for.
+async function callCommerceAuthenticated(endpoint, body) {
+  const url = `${COMMERCE_BASE_URL}/${endpoint}`;
+  let headers;
+  try {
+    headers = await getCommerceAuthHeaders(url);
+  } catch (err) {
+    logger.error("placeMarketplaceOrder failed", {
+      error: String(err),
+      stack: err && err.stack,
+      message: err && err.message,
+      where: "callCommerceAuthenticated.oidc_token_acquisition",
+      endpoint,
+      url,
+    });
+    throw new HttpsError("internal", "Could not authenticate with the Commerce Bridge.");
+  }
+  return callCommerceRaw(endpoint, body, headers);
 }
 
 // Milestone 6 checkout gaps — server-side resolution of the authenticated
@@ -500,7 +539,7 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
       typeof quotationEngineId === "string" && quotationEngineId ? quotationEngineId : undefined,
   };
 
-  const result = await callCommerce("placeMarketplaceOrderForHealthcare", commercePayload);
+  const result = await callCommerceAuthenticated("placeMarketplaceOrderForHealthcare", commercePayload);
 
   if (!result.ok) {
     await orderRef.update({ status: "failed", updatedAt: admin.firestore.FieldValue.serverTimestamp() });
@@ -663,7 +702,7 @@ exports.quoteMarketplaceCart = onCall({ region: "us-central1" }, async (request)
     );
   }
 
-  const result = await callCommerce("quoteMarketplaceCartForHealthcare", {
+  const result = await callCommerceAuthenticated("quoteMarketplaceCartForHealthcare", {
     orgId,
     patientRef: patientId,
     patientName: resolvedName,
@@ -753,7 +792,7 @@ exports.cancelMarketplaceOrder = onCall({ region: "us-central1" }, async (reques
     throw new HttpsError("failed-precondition", "This order cannot be cancelled.");
   }
 
-  const statusResult = await callCommerce("getMarketplaceOrderStatusForHealthcare", {
+  const statusResult = await callCommerceAuthenticated("getMarketplaceOrderStatusForHealthcare", {
     engineId: data.order.engineId,
   });
   if (!statusResult.ok) {
@@ -767,7 +806,7 @@ exports.cancelMarketplaceOrder = onCall({ region: "us-central1" }, async (reques
     );
   }
 
-  const cancelResult = await callCommerce("cancelMarketplaceOrderForHealthcare", {
+  const cancelResult = await callCommerceAuthenticated("cancelMarketplaceOrderForHealthcare", {
     orgId: data.orgId,
     engineId: data.order.engineId,
     patientRef: patientId,
@@ -847,7 +886,7 @@ exports.getMarketplaceOrderStatus = onCall({ region: "us-central1" }, async (req
     return { orderId, status: data.status, live: null };
   }
 
-  const result = await callCommerce("getMarketplaceOrderStatusForHealthcare", {
+  const result = await callCommerceAuthenticated("getMarketplaceOrderStatusForHealthcare", {
     engineId: data.order.engineId,
   });
   if (!result.ok) {

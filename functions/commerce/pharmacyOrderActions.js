@@ -62,15 +62,34 @@
 const { HttpsError, onCall } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
+const { getCommerceAuthHeaders } = require("./lib/commerceAuth");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
 
+// Healthcare<->Commerce Bridge Security Hardening, Stage 1 (2026-08-11).
+// Every Commerce endpoint this file calls (getMarketplaceOrderStatusForHealthcare,
+// cancelMarketplaceOrderForHealthcare, startOrderPreparationForHealthcare,
+// completeOrderFulfillmentForHealthcare, processDeliveryFailureForHealthcare)
+// is patient/staff-action-bound and privileged (real Odoo writes) — so
+// unlike marketplaceCheckout.js/marketplaceProductReview.js, this file has
+// no public-endpoint call site to keep separate; callCommerce always mints
+// a Google OIDC identity token (lib/commerceAuth.js) and attaches it as a
+// Bearer token, the same mechanism adminMarketplaceCategories.js has used
+// since the admin bridge's own 2026-07-18 fix.
 async function callCommerce(endpoint, body) {
+  const url = `${COMMERCE_BASE_URL}/${endpoint}`;
+  let headers;
+  try {
+    headers = await getCommerceAuthHeaders(url);
+  } catch (err) {
+    console.error(`[pharmacyOrderActions] OIDC token acquisition failed for ${endpoint}:`, err);
+    throw new HttpsError("internal", "Could not authenticate with the Commerce Bridge.");
+  }
   let response;
   try {
-    response = await fetch(`${COMMERCE_BASE_URL}/${endpoint}`, {
+    response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
   } catch (err) {

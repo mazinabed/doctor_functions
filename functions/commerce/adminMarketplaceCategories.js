@@ -29,34 +29,21 @@
 // HEALTHCARE_SERVICE_ACCOUNT_EMAIL doc comment) — a plain unauthenticated
 // fetch() would now be rejected by Cloud Run itself before Commerce's code
 // even runs. Every call mints a real Google-signed OIDC identity token
-// (via this function's own ambient service-account credentials — no key
-// file, no secret, same "use the already-authenticated identity" principle
-// as this repo's other gcloud-based scripts) scoped to the exact target
-// URL as audience, and attaches it as a Bearer token. This is what actually
-// proves "this request came from Healthcare's backend," not the actorUid
-// field, which remains only an audit-trail label.
+// scoped to the exact target URL as audience, and attaches it as a Bearer
+// token. This is what actually proves "this request came from Healthcare's
+// backend," not the actorUid field, which remains only an audit-trail
+// label. Healthcare<->Commerce Bridge Security Hardening, Stage 1
+// (2026-08-11): the OIDC-minting implementation itself now lives in
+// lib/commerceAuth.js (extracted, not changed) — this file was the
+// original source of that pattern; other bridge callers (marketplaceCheckout.js,
+// marketplaceProductReview.js, pharmacyOrderActions.js) now share it too
+// instead of each re-deriving their own copy.
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { getFirestore } = require("firebase-admin/firestore");
-const { GoogleAuth } = require("google-auth-library");
 const fetch = require("node-fetch");
+const { getCommerceAuthHeaders } = require("./lib/commerceAuth");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
-
-const googleAuth = new GoogleAuth();
-// One IdTokenClient per target URL, reused across warm-instance calls —
-// each Cloud Function endpoint is its own distinct audience, so a client
-// authenticated for one endpoint's audience cannot be reused for another.
-const idTokenClientsByUrl = new Map();
-
-async function getAuthHeaders(targetUrl) {
-  let client = idTokenClientsByUrl.get(targetUrl);
-  if (!client) {
-    client = await googleAuth.getIdTokenClient(targetUrl);
-    idTokenClientsByUrl.set(targetUrl, client);
-  }
-  const headers = await client.getRequestHeaders(targetUrl);
-  return { ...headers, "Content-Type": "application/json" };
-}
 
 async function requireAdmin(request) {
   if (!request.auth) {
@@ -72,7 +59,7 @@ async function callCommerce(endpoint, body) {
   const targetUrl = `${COMMERCE_BASE_URL}/${endpoint}`;
   let response;
   try {
-    const headers = await getAuthHeaders(targetUrl);
+    const headers = await getCommerceAuthHeaders(targetUrl);
     response = await fetch(targetUrl, {
       method: "POST",
       headers,
