@@ -340,7 +340,13 @@ exports.startPharmacyOrderPreparation = onCall({ region: "us-central1" }, async 
   }
   const engineId = requireLinkedOdooOrder(data);
 
-  const result = await callCommerce("startOrderPreparationForHealthcare", { engineId });
+  // orgId (2026-08-11, Stage 2 addendum) — enables Commerce's own
+  // defense-in-depth ownership check (verifyEngineIdBelongsToOrg in
+  // marketplaceCheckout.ts): the order's real Odoo company_id must match
+  // this org's own odooCompanyId. Harmless to send before Commerce's check
+  // exists (an unrecognized extra body field is simply ignored); becomes
+  // enforced automatically once Commerce's Stage 2 deploy lands.
+  const result = await callCommerce("startOrderPreparationForHealthcare", { engineId, orgId: data.orgId });
   if (!result.ok) {
     throw new HttpsError(
       "internal",
@@ -615,7 +621,9 @@ exports.markPharmacyOrderCompleted = onCall({ region: "us-central1" }, async (re
 
   const engineId = requireLinkedOdooOrder(data);
 
-  const result = await callCommerce("completeOrderFulfillmentForHealthcare", { engineId });
+  // orgId — same Stage 2 ownership-check addendum as startPharmacyOrderPreparation
+  // above.
+  const result = await callCommerce("completeOrderFulfillmentForHealthcare", { engineId, orgId: data.orgId });
   if (!result.ok) {
     throw new HttpsError(
       "internal",
