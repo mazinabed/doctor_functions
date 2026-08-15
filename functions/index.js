@@ -2273,6 +2273,32 @@ exports.adminDeleteMarketplaceCategory = adminDeleteMarketplaceCategory;
 exports.adminSyncMarketplaceCategoriesToOdoo = adminSyncMarketplaceCategoriesToOdoo;
 exports.adminBulkImportMarketplaceCategories = adminBulkImportMarketplaceCategories;
 
+// ─── TrustyDr Commerce Bridge — Canonical Product Foundation (Admin) ───────
+// Marketplace Platform Phase 1 (trustydr-commerce's
+// docs/progress/MARKETPLACE_PLATFORM_ROADMAP_PROGRESS.md). Admin-only
+// canonical product CRUD + link moderation (mydoctor_admin -> Healthcare
+// -> Commerce) — see adminCanonicalProducts.js's own header for the full
+// contract. Same admin gate and OIDC-authenticated Commerce call pattern
+// as adminMarketplaceCategories.js above.
+const {
+  adminCreateCanonicalProduct,
+  adminUpdateCanonicalProduct,
+  adminListCanonicalProducts,
+  adminGetCanonicalProduct,
+  adminListCanonicalLinkSuggestions,
+  adminReviewCanonicalLink,
+  adminProposeCanonicalLink,
+  adminGenerateCanonicalLinkSuggestions,
+} = require("./commerce/adminCanonicalProducts");
+exports.adminCreateCanonicalProduct = adminCreateCanonicalProduct;
+exports.adminUpdateCanonicalProduct = adminUpdateCanonicalProduct;
+exports.adminListCanonicalProducts = adminListCanonicalProducts;
+exports.adminGetCanonicalProduct = adminGetCanonicalProduct;
+exports.adminListCanonicalLinkSuggestions = adminListCanonicalLinkSuggestions;
+exports.adminReviewCanonicalLink = adminReviewCanonicalLink;
+exports.adminProposeCanonicalLink = adminProposeCanonicalLink;
+exports.adminGenerateCanonicalLinkSuggestions = adminGenerateCanonicalLinkSuggestions;
+
 // ─── TrustyDr Commerce Bridge — Standalone Subscription Billing (Admin) ────
 // Admin-only payment review (mydoctor_admin -> Healthcare -> Commerce) —
 // see adminStandaloneSubscriptionPayments.js's own header for the full
