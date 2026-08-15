@@ -81,6 +81,13 @@ const PUBLIC_COMMERCE_ENDPOINTS = new Set([
   "getMarketplaceCatalogForHealthcare",
   "getActiveMarketplaceStoresForHealthcare",
   "getEligibleStandaloneStoresForHealthcare",
+  // Marketplace Platform Phase 2 (Multi-Seller Aggregated Discovery,
+  // 2026-08-14) — called via plain fetch() in getActiveMarketplaceStores.js,
+  // same public, unauthenticated posture as the two store-discovery
+  // endpoints above (no trusted identity, no privileged mutation — only
+  // returns already-approved canonical-link mappings and canonical product
+  // display fields).
+  "getApprovedCanonicalLinksForHealthcare",
 ]);
 
 module.exports = {

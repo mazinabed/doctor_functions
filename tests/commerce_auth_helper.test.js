@@ -103,7 +103,7 @@ describe('PRIVATE_COMMERCE_ENDPOINTS / PUBLIC_COMMERCE_ENDPOINTS classification'
     expect([...PRIVATE_COMMERCE_ENDPOINTS].sort()).toEqual(expected);
   });
 
-  test('contains exactly the 6 confirmed public-by-design bridge endpoints', () => {
+  test('contains exactly the 7 confirmed public-by-design bridge endpoints', () => {
     const { PUBLIC_COMMERCE_ENDPOINTS } = require('../functions/commerce/lib/commerceAuth');
     const expected = [
       'getMarketplaceProductDetailForHealthcare',
@@ -112,6 +112,9 @@ describe('PRIVATE_COMMERCE_ENDPOINTS / PUBLIC_COMMERCE_ENDPOINTS classification'
       'getMarketplaceCatalogForHealthcare',
       'getActiveMarketplaceStoresForHealthcare',
       'getEligibleStandaloneStoresForHealthcare',
+      // Marketplace Platform Phase 2 (Multi-Seller Aggregated Discovery,
+      // 2026-08-14) — see commerceAuth.js's own comment on this entry.
+      'getApprovedCanonicalLinksForHealthcare',
     ].sort();
     expect([...PUBLIC_COMMERCE_ENDPOINTS].sort()).toEqual(expected);
   });

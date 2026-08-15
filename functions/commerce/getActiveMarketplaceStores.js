@@ -36,6 +36,7 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
+const { computeGroupedProducts, rankGroupedProducts } = require("./lib/marketplaceGrouping");
 
 const COMMERCE_STORE_DISCOVERY_BRIDGE_URL =
   "https://us-central1-trustydr-commerce.cloudfunctions.net/getActiveMarketplaceStoresForHealthcare";
@@ -51,6 +52,19 @@ const COMMERCE_STORE_DISCOVERY_BRIDGE_URL =
 // is created by this change — see this file's own merge logic below).
 const STANDALONE_STORE_DISCOVERY_BRIDGE_URL =
   "https://us-central1-trustydr-commerce.cloudfunctions.net/getEligibleStandaloneStoresForHealthcare";
+
+// Marketplace Platform, Phase 2 (Multi-Seller Aggregated Discovery) —
+// SEPARATE, additive bridge call. Reuses the already-computed, already
+// store-name-enriched mergedProducts below (never re-derives eligibility or
+// product data) and asks Commerce only "which of these listings have an
+// approved canonical link, and what is that canonical product called."
+// Best-effort, exactly like the standalone-store merge above: if this call
+// fails for any reason, `stores`/`products`/`categories`/`hasMoreProducts`
+// are still returned exactly as before, unaffected — this is a NEW,
+// additive `groupedProducts` field only, never a replacement of the
+// existing response shape a pre-Phase-2 client already parses.
+const COMMERCE_GROUPED_LINKS_BRIDGE_URL =
+  "https://us-central1-trustydr-commerce.cloudfunctions.net/getApprovedCanonicalLinksForHealthcare";
 
 const PHARMACY_ORG_ID_PREFIX = "hc_pharmacy_";
 const MAX_CANDIDATES = 50;
@@ -494,10 +508,44 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   const mergedCategories = categories.length > 0 ? categories : standaloneCategories;
   const mergedHasMoreProducts = hasMoreProducts || standaloneHasMoreProducts;
 
+  // Marketplace Platform, Phase 2 — Multi-Seller Aggregated Discovery.
+  // Best-effort only: a failure here never blocks or alters the response
+  // above in any way (same pattern the standalone-store merge already
+  // established). `groupedProducts` is empty, not missing, on any failure
+  // — a client checking `.length` behaves identically either way.
+  let groupedProducts = [];
+  try {
+    const orgIdsWithProducts = [...new Set(mergedProducts.map((p) => p.orgId))];
+    if (orgIdsWithProducts.length > 0) {
+      const groupedLinksResponse = await fetch(COMMERCE_GROUPED_LINKS_BRIDGE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgIds: orgIdsWithProducts }),
+      });
+      if (groupedLinksResponse.ok) {
+        const { links, canonicalProducts } = await groupedLinksResponse.json();
+        const groups = computeGroupedProducts(
+          mergedProducts,
+          Array.isArray(links) ? links : [],
+          Array.isArray(canonicalProducts) ? canonicalProducts : [],
+        );
+        groupedProducts = rankGroupedProducts(groups);
+      } else {
+        console.error(
+          "[getActiveMarketplaceStores] Grouped Links Bridge returned status:",
+          groupedLinksResponse.status,
+        );
+      }
+    }
+  } catch (err) {
+    console.error("[getActiveMarketplaceStores] network error reaching Grouped Links Bridge:", err);
+  }
+
   return {
     stores: mergedStores,
     products: mergedProducts,
     categories: mergedCategories,
     hasMoreProducts: mergedHasMoreProducts,
+    groupedProducts,
   };
 });
