@@ -63,6 +63,67 @@ describe('computeGroupedProducts', () => {
     ]);
   });
 
+  it('aggregates a Healthcare-linked pharmacy offer together with a standalone Commerce offer for the same canonical product (live retest #3 — the two seller identity schemes are not treated differently anywhere in this function)', () => {
+    // Mirrors the real live topology found while investigating a reported
+    // "second seller missing" bug: a Healthcare pharmacy org (orgId always
+    // `hc_pharmacy_{providerId}`, per getActiveMarketplaceStores.js) and a
+    // standalone Commerce org (orgId is Commerce's own raw doc id, per
+    // getEligibleStandaloneStoresForHealthcare) both selling the same
+    // canonical Digital Blood Pressure Monitor. Both origins arrive here
+    // already merged into one flat `products` array by the caller
+    // (Healthcare's mergedProducts) — this function has no origin-specific
+    // branching at all, so there is nothing for it to get wrong between the
+    // two schemes. The real bug (found via live Firestore data, not this
+    // test) was an approved canonical_product_links doc pointing at a THIRD
+    // orgId with no organizations document under either identity scheme —
+    // a Phase 1 admin mis-link, not a Phase 2 join defect.
+    const products = [
+      product({
+        orgId: 'hc_pharmacy_ORp58HddudZRepouJEbY8irGyvM2',
+        engineId: '65',
+        name_en: 'Digital Blood Pressure Monitor (Upper-arm) — Unit',
+        displayPrice: 35000,
+        storeName_en: 'Demp Pharmacy',
+      }),
+      product({
+        orgId: 'OIH67W4vZjLPV7SVa3bd',
+        engineId: '74',
+        name_en: 'Digital Blood Pressure Monitor (Upper-arm) — Unit',
+        displayPrice: 30000,
+        storeName_en: 'Demo Store',
+      }),
+    ];
+    const links = [
+      {
+        orgId: 'hc_pharmacy_ORp58HddudZRepouJEbY8irGyvM2',
+        engineId: '65',
+        canonicalId: 'canonical_bp_monitor',
+      },
+      { orgId: 'OIH67W4vZjLPV7SVa3bd', engineId: '74', canonicalId: 'canonical_bp_monitor' },
+    ];
+    const canonicalBpMonitor = {
+      canonicalId: 'canonical_bp_monitor',
+      name_en: 'Digital Blood Pressure Monitor (Upper-arm) — Unit',
+      name_ar: 'جهاز قياس ضغط الدم الرقمي (للعضد) — وحدة واحدة',
+      brandName: null,
+      categoryKey: 'medical_devices_monitoring_blood_pressure_monitors',
+      representativeImageUrl: null,
+    };
+    const groups = computeGroupedProducts(products, links, [canonicalBpMonitor]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].sellerCount).toBe(2);
+    expect(groups[0].lowestPrice).toBe(30000);
+    expect(groups[0].offers.map((o) => o.storeName_en)).toEqual([
+      'Demo Store', // cheapest first, regardless of seller identity scheme
+      'Demp Pharmacy',
+    ]);
+    expect(groups[0].offers.map((o) => o.orgId)).toEqual([
+      'OIH67W4vZjLPV7SVa3bd',
+      'hc_pharmacy_ORp58HddudZRepouJEbY8irGyvM2',
+    ]);
+  });
+
   it('leaves an unlinked product out of every group entirely (it stays in the ordinary product list, handled by the caller)', () => {
     const products = [
       product({ orgId: 'org_a', engineId: 'engine_a' }),
