@@ -319,7 +319,25 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
     // (see trustydr-commerce's resolveOrCreateDraftMarketplaceOrder).
     couponCode,
     quotationEngineId,
+    // Marketplace Platform Phase 3 (Multi-Seller Cart + Split Checkout,
+    // 2026-08-15) — a client-generated id shared by every order placed in
+    // ONE multi-seller checkout attempt (TrustyDr-pwa's
+    // marketplace_checkout_page.dart mints it once, before placing the
+    // first of N per-seller orders). Purely a display-correlation field:
+    // it never affects order placement, pricing, Odoo company scoping, or
+    // any guard above — each order is still placed via this exact same
+    // single-seller call, one per seller, exactly as before this phase.
+    // Optional and always null for an ordinary single-seller checkout.
+    checkoutGroupId,
   } = request.data || {};
+  if (checkoutGroupId !== undefined && checkoutGroupId !== null && typeof checkoutGroupId !== "string") {
+    throwLogged(
+      "validate_request_shape",
+      "invalid-argument",
+      "checkoutGroupId, when present, must be a string.",
+      { orgId: orgId || null },
+    );
+  }
 
   if (
     !orgId ||
@@ -458,6 +476,10 @@ exports.placeMarketplaceOrder = onCall({ region: "us-central1" }, async (request
         // for display purposes.
         storeNameEn: typeof storeNameEn === "string" ? storeNameEn : null,
         storeNameAr: typeof storeNameAr === "string" ? storeNameAr : null,
+        // Phase 3 — display-correlation only (see this function's own
+        // destructuring comment above); null for an ordinary single-seller
+        // checkout, unchanged from before this phase in that case.
+        checkoutGroupId: typeof checkoutGroupId === "string" ? checkoutGroupId : null,
         patientName: resolvedName,
         patientPhone: resolvedPhone || null,
         order: null,
