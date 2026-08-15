@@ -2288,6 +2288,7 @@ const {
   adminListCanonicalLinkSuggestions,
   adminReviewCanonicalLink,
   adminProposeCanonicalLink,
+  adminSearchMarketplaceListings,
   adminGenerateCanonicalLinkSuggestions,
 } = require("./commerce/adminCanonicalProducts");
 exports.adminCreateCanonicalProduct = adminCreateCanonicalProduct;
@@ -2297,6 +2298,7 @@ exports.adminGetCanonicalProduct = adminGetCanonicalProduct;
 exports.adminListCanonicalLinkSuggestions = adminListCanonicalLinkSuggestions;
 exports.adminReviewCanonicalLink = adminReviewCanonicalLink;
 exports.adminProposeCanonicalLink = adminProposeCanonicalLink;
+exports.adminSearchMarketplaceListings = adminSearchMarketplaceListings;
 exports.adminGenerateCanonicalLinkSuggestions = adminGenerateCanonicalLinkSuggestions;
 
 // ─── TrustyDr Commerce Bridge — Standalone Subscription Billing (Admin) ────

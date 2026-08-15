@@ -157,6 +157,24 @@ exports.adminProposeCanonicalLink = onCall({ region: "us-central1" }, async (req
   });
 });
 
+// Live-smoke-test correction #3 — manual linking previously required the
+// admin to type raw orgId/engineId. This relays the small, narrowly-scoped
+// admin search endpoint (searchMarketplaceListingsForHealthcare) that lets
+// the admin UI search by human-readable product name/SKU/brand instead —
+// same admin gate, same trust boundary as every relay in this file.
+exports.adminSearchMarketplaceListings = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  const data = request.data || {};
+  if (!data.query || typeof data.query !== "string") {
+    throw new HttpsError("invalid-argument", "query is required.");
+  }
+  return callCommerce("searchMarketplaceListingsForHealthcare", {
+    actorUid: request.auth.uid,
+    query: data.query,
+    limit: data.limit,
+  });
+});
+
 // Odoo-connected on Commerce's side (barcode resolution via
 // resolveIdentifier) — longer timeout than the plain-CRUD relays above,
 // matching adminSyncMarketplaceCategoriesToOdoo's own precedent for the
