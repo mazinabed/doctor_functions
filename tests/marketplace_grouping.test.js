@@ -9,7 +9,11 @@
  * Run with: cd tests && npx jest marketplace_grouping
  */
 
-const { computeGroupedProducts, rankGroupedProducts } = require('../functions/commerce/lib/marketplaceGrouping');
+const {
+  computeGroupedProducts,
+  rankGroupedProducts,
+  applySponsoredPlacements,
+} = require('../functions/commerce/lib/marketplaceGrouping');
 
 const CANONICAL_PANADOL = {
   canonicalId: 'canonical_panadol',
@@ -189,5 +193,93 @@ describe('rankGroupedProducts', () => {
     const inputCopy = [...input];
     rankGroupedProducts(input);
     expect(input).toEqual(inputCopy);
+  });
+
+  // Marketplace Platform Phase 5 (Sponsored/Promoted Monetization,
+  // 2026-08-15).
+  it('ranks a sponsored group ahead of a featured (but non-sponsored) group, regardless of price', () => {
+    const featured = group({ canonicalId: 'featured', isFeatured: true, lowestPrice: 1000 });
+    const sponsored = group({ canonicalId: 'sponsored', isFeatured: false, isSponsored: true, lowestPrice: 9000 });
+    const ranked = rankGroupedProducts([featured, sponsored]);
+    expect(ranked.map((g) => g.canonicalId)).toEqual(['sponsored', 'featured']);
+  });
+
+  it('is a complete no-op when no group carries isSponsored (exact pre-Phase-5 ordering preserved)', () => {
+    const cheap = group({ canonicalId: 'cheap', isFeatured: false, lowestPrice: 1000 });
+    const featured = group({ canonicalId: 'featured', isFeatured: true, lowestPrice: 9000 });
+    const expensive = group({ canonicalId: 'expensive', isFeatured: false, lowestPrice: 5000 });
+    const ranked = rankGroupedProducts([cheap, featured, expensive]);
+    expect(ranked.map((g) => g.canonicalId)).toEqual(['featured', 'cheap', 'expensive']);
+  });
+});
+
+describe('applySponsoredPlacements', () => {
+  function offer(overrides) {
+    return { orgId: 'org_a', engineId: 'engine_a', storeName_en: 'Al Noor Pharmacy', displayPrice: 5000, ...overrides };
+  }
+  function group(overrides) {
+    return { canonicalId: 'canonical_panadol', isFeatured: false, lowestPrice: 5000, offers: [offer({})], ...overrides };
+  }
+
+  it('is a no-op when sponsoredPlacements is empty/undefined (regression: exact same groups returned)', () => {
+    const groups = [group({})];
+    expect(applySponsoredPlacements(groups, [])).toBe(groups);
+    expect(applySponsoredPlacements(groups, undefined)).toBe(groups);
+  });
+
+  it('marks the matching offer AND its parent group isSponsored for a sponsored_offer placement', () => {
+    const groups = [
+      group({
+        canonicalId: 'canonical_panadol',
+        offers: [
+          offer({ orgId: 'org_a', engineId: 'engine_a' }),
+          offer({ orgId: 'org_b', engineId: 'engine_b', storeName_en: 'Baghdad Central Pharmacy' }),
+        ],
+      }),
+    ];
+    const placements = [
+      { placementId: 'p1', orgId: 'org_b', engineId: 'engine_b', placementType: 'sponsored_offer' },
+    ];
+    const result = applySponsoredPlacements(groups, placements);
+
+    expect(result[0].isSponsored).toBe(true);
+    const [orgAOffer, orgBOffer] = result[0].offers;
+    expect(orgAOffer.isSponsored).toBeUndefined();
+    expect(orgBOffer.isSponsored).toBe(true);
+    expect(orgBOffer.sponsoredPlacementId).toBe('p1');
+  });
+
+  it('marks every offer belonging to a featured_store org, across different canonical groups', () => {
+    const groups = [
+      group({ canonicalId: 'canonical_panadol', offers: [offer({ orgId: 'org_a', engineId: 'engine_a' })] }),
+      group({ canonicalId: 'canonical_ibuprofen', offers: [offer({ orgId: 'org_a', engineId: 'engine_b' })] }),
+      group({ canonicalId: 'canonical_other', offers: [offer({ orgId: 'org_z', engineId: 'engine_z' })] }),
+    ];
+    const placements = [{ placementId: 'p2', orgId: 'org_a', engineId: null, placementType: 'featured_store' }];
+    const result = applySponsoredPlacements(groups, placements);
+
+    expect(result[0].isSponsored).toBe(true);
+    expect(result[1].isSponsored).toBe(true);
+    expect(result[2].isSponsored).toBeUndefined();
+  });
+
+  it('never touches price/name/availability/seller-identity fields — only adds isSponsored/sponsoredPlacementId', () => {
+    const original = offer({ orgId: 'org_a', engineId: 'engine_a', displayPrice: 4750, availabilityBadge: 'low_stock' });
+    const groups = [group({ offers: [original] })];
+    const placements = [{ placementId: 'p3', orgId: 'org_a', engineId: 'engine_a', placementType: 'sponsored_offer' }];
+    const result = applySponsoredPlacements(groups, placements);
+
+    expect(result[0].offers[0].displayPrice).toBe(4750);
+    expect(result[0].offers[0].availabilityBadge).toBe('low_stock');
+    expect(result[0].offers[0].orgId).toBe('org_a');
+  });
+
+  it('does not mutate the input groups array or its offer objects', () => {
+    const original = offer({ orgId: 'org_a', engineId: 'engine_a' });
+    const groups = [group({ offers: [original] })];
+    const placements = [{ placementId: 'p4', orgId: 'org_a', engineId: 'engine_a', placementType: 'sponsored_offer' }];
+    applySponsoredPlacements(groups, placements);
+    expect(original.isSponsored).toBeUndefined();
+    expect(groups[0].isSponsored).toBeUndefined();
   });
 });

@@ -77,16 +77,86 @@ function computeGroupedProducts(products, links, canonicalProducts) {
 
 /**
  * Candidate groups -> final display order. Simple and deterministic today
- * (featured first, then lowest price ascending) — intentionally NOT an ad
- * engine and NOT external search infrastructure (premature at current
- * scale, per the program's own audit). The seam is the point: a future
- * sponsored layer inserts here, not inside computeGroupedProducts.
+ * (sponsored first, then featured, then lowest price ascending) —
+ * intentionally NOT an ad engine and NOT external search infrastructure
+ * (premature at current scale, per the program's own audit).
+ *
+ * Marketplace Platform Phase 5 (Sponsored/Promoted Monetization,
+ * 2026-08-15): sponsored placement is now the top-priority sort key, ahead
+ * of the existing isFeatured/lowestPrice ordering below it — but it is
+ * ADDED as a new leading tiebreaker, never a replacement for the existing
+ * organic order. Groups with no sponsored placement (isSponsored falsy or
+ * absent — the case for every group whenever applySponsoredPlacements was
+ * skipped or found nothing) sort exactly as before this phase.
  */
 function rankGroupedProducts(groupedProducts) {
   return [...groupedProducts].sort((a, b) => {
+    if (Boolean(a.isSponsored) !== Boolean(b.isSponsored)) return a.isSponsored ? -1 : 1;
     if (a.isFeatured !== b.isFeatured) return a.isFeatured ? -1 : 1;
     return a.lowestPrice - b.lowestPrice;
   });
 }
 
-module.exports = { computeGroupedProducts, rankGroupedProducts };
+/**
+ * Marketplace Platform Phase 5 (Sponsored/Promoted Monetization,
+ * 2026-08-15) — the monetization insertion point this file's own header
+ * comment anticipated: called between computeGroupedProducts and
+ * rankGroupedProducts, never inside either. Pure and I/O-free, same
+ * convention as the rest of this file.
+ *
+ * Marks each offer AND its parent group with `isSponsored` wherever an
+ * active sponsored placement matches. Two placement types:
+ *   - "sponsored_offer": matches one specific offer by orgId+engineId.
+ *   - "featured_store": matches ANY offer within a group belonging to that
+ *     orgId (the org sponsors its own presence, not one specific listing).
+ * A group's own `isSponsored` is true iff at least one of its offers is.
+ * `sponsoredPlacementId` is attached per matched offer (not per group) so
+ * the caller can record an impression/click event against the exact
+ * placement responsible, even when a group has more than one seller.
+ *
+ * Deliberately scoped to the GROUPED discovery list only (not the flat
+ * `products` list) — this is the Phase 2 ranking seam the roadmap calls
+ * for reusing; sponsoring a listing that has no approved canonical link
+ * yet is out of scope for this phase (see the Phase 5 architecture doc's
+ * own "NOT IMPLEMENTED YET" section).
+ *
+ * @param {Array<object>} groupedProducts - output of computeGroupedProducts
+ * @param {Array<{placementId:string, orgId:string, engineId:string|null, placementType:string}>} sponsoredPlacements
+ * @returns {Array<object>} the SAME groups, with isSponsored/sponsoredPlacementId
+ *   fields added where applicable — never mutates product/catalog truth
+ *   fields (price, name, images, availability, seller identity all
+ *   pass through completely unchanged).
+ */
+function applySponsoredPlacements(groupedProducts, sponsoredPlacements) {
+  if (!Array.isArray(sponsoredPlacements) || sponsoredPlacements.length === 0) {
+    return groupedProducts;
+  }
+
+  const offerPlacementByKey = new Map(); // `${orgId}_${engineId}` -> placementId
+  const storePlacementByOrgId = new Map(); // orgId -> placementId
+  for (const placement of sponsoredPlacements) {
+    if (placement.placementType === "sponsored_offer" && placement.engineId) {
+      offerPlacementByKey.set(`${placement.orgId}_${placement.engineId}`, placement.placementId);
+    } else if (placement.placementType === "featured_store") {
+      storePlacementByOrgId.set(placement.orgId, placement.placementId);
+    }
+  }
+  if (offerPlacementByKey.size === 0 && storePlacementByOrgId.size === 0) {
+    return groupedProducts;
+  }
+
+  return groupedProducts.map((group) => {
+    let groupIsSponsored = false;
+    const offers = group.offers.map((offer) => {
+      const placementId =
+        offerPlacementByKey.get(`${offer.orgId}_${offer.engineId}`) ?? storePlacementByOrgId.get(offer.orgId);
+      if (!placementId) return offer;
+      groupIsSponsored = true;
+      return { ...offer, isSponsored: true, sponsoredPlacementId: placementId };
+    });
+    if (!groupIsSponsored) return group;
+    return { ...group, isSponsored: true, offers };
+  });
+}
+
+module.exports = { computeGroupedProducts, rankGroupedProducts, applySponsoredPlacements };

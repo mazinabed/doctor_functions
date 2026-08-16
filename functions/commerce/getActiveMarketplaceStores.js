@@ -36,7 +36,7 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
-const { computeGroupedProducts, rankGroupedProducts } = require("./lib/marketplaceGrouping");
+const { computeGroupedProducts, rankGroupedProducts, applySponsoredPlacements } = require("./lib/marketplaceGrouping");
 
 const COMMERCE_STORE_DISCOVERY_BRIDGE_URL =
   "https://us-central1-trustydr-commerce.cloudfunctions.net/getActiveMarketplaceStoresForHealthcare";
@@ -65,6 +65,16 @@ const STANDALONE_STORE_DISCOVERY_BRIDGE_URL =
 // existing response shape a pre-Phase-2 client already parses.
 const COMMERCE_GROUPED_LINKS_BRIDGE_URL =
   "https://us-central1-trustydr-commerce.cloudfunctions.net/getApprovedCanonicalLinksForHealthcare";
+
+// Marketplace Platform Phase 5 (Sponsored/Promoted Monetization,
+// 2026-08-15) — SEPARATE, additive bridge call, same best-effort posture as
+// the grouped-links call above: called AFTER computeGroupedProducts but
+// BEFORE rankGroupedProducts (this is the Phase 2 ranking seam), and a
+// failure here degrades to organic-only ranking, never blocking discovery.
+// Sponsorship data lives entirely in Commerce's marketplace_sponsored_placements
+// collection — this call never reads or writes product/inventory truth.
+const COMMERCE_SPONSORED_PLACEMENTS_BRIDGE_URL =
+  "https://us-central1-trustydr-commerce.cloudfunctions.net/getActiveSponsoredPlacementsForHealthcare";
 
 const PHARMACY_ORG_ID_PREFIX = "hc_pharmacy_";
 const MAX_CANDIDATES = 50;
@@ -524,11 +534,36 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
       });
       if (groupedLinksResponse.ok) {
         const { links, canonicalProducts } = await groupedLinksResponse.json();
-        const groups = computeGroupedProducts(
+        let groups = computeGroupedProducts(
           mergedProducts,
           Array.isArray(links) ? links : [],
           Array.isArray(canonicalProducts) ? canonicalProducts : [],
         );
+
+        // Marketplace Platform Phase 5 — SEPARATE nested best-effort call,
+        // deliberately its own try/catch so a sponsored-fetch failure only
+        // degrades to organic-only ranking (the exact same `groups` that
+        // would have been ranked before this phase) without affecting the
+        // grouped-links call above it in any way.
+        try {
+          const sponsoredResponse = await fetch(COMMERCE_SPONSORED_PLACEMENTS_BRIDGE_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ orgIds: orgIdsWithProducts, surface: "marketplace_discover", channel: "b2c" }),
+          });
+          if (sponsoredResponse.ok) {
+            const { placements } = await sponsoredResponse.json();
+            groups = applySponsoredPlacements(groups, Array.isArray(placements) ? placements : []);
+          } else {
+            console.error(
+              "[getActiveMarketplaceStores] Sponsored Placements Bridge returned status:",
+              sponsoredResponse.status,
+            );
+          }
+        } catch (err) {
+          console.error("[getActiveMarketplaceStores] network error reaching Sponsored Placements Bridge:", err);
+        }
+
         groupedProducts = rankGroupedProducts(groups);
       } else {
         console.error(

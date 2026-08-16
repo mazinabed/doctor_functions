@@ -2373,6 +2373,12 @@ exports.withdrawProductReview = withdrawProductReview;
 exports.getMyProductReview = getMyProductReview;
 exports.getProductReviews = getProductReviews;
 
+// ─── Sponsored/Promoted Monetization, Phase 5 (2026-08-15) ─────────────────
+// Patient-App-facing, impression/click measurement foundation only — see
+// commerce/sponsoredPlacements.js's own header for the full contract.
+const { recordSponsoredEvent } = require("./commerce/sponsoredPlacements");
+exports.recordSponsoredEvent = recordSponsoredEvent;
+
 // ─── Pharmacy Operations Dashboard (Phase 1, Increment 2) — order actions ──
 // Accept/Reject/Start Preparing/Mark Ready for Pickup/Mark Out for
 // Delivery/Mark Completed — see pharmacyOrderActions.js's own header for
