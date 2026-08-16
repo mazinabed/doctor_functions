@@ -251,12 +251,12 @@ async function callCommerceAuthenticated(endpoint, body) {
 // address for this specific order (see EngineDeliveryAddress in
 // trustydr-commerce), the profile's saved address itself is never
 // overwritten by a checkout edit.
-exports.getMarketplaceCheckoutProfile = onCall({ region: "us-central1" }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "You must be signed in.");
-  }
-  const db = admin.firestore();
-  const userSnap = await db.collection("users").doc(request.auth.uid).get();
+// Extracted as its own function (2026-08-16 fix) purely so the phone
+// fallback below is directly unit-testable against the Firestore emulator,
+// the same pattern already used for resolveCommerceSubscriptionStatus in
+// this file — the onCall handler itself stays a thin wrapper.
+async function resolveMarketplaceCheckoutProfile(db, uid, authToken) {
+  const userSnap = await db.collection("users").doc(uid).get();
   const data = userSnap.exists ? userSnap.data() : {};
 
   const homeAddress =
@@ -269,11 +269,36 @@ exports.getMarketplaceCheckoutProfile = onCall({ region: "us-central1" }, async 
         }
       : null;
 
+  // Phone fallback — mirrors the exact fallback the existing (working)
+  // Healthcare booking flow already relies on (confirm_booking_modal.dart:
+  // userSnap['phoneNumber'] trimmed, else the Auth-level phone). A
+  // patient's Firestore users/{uid}.phoneNumber is only ever written once,
+  // at initial doc creation (database_service.dart), and can be empty even
+  // when the account has a real, verified phone number on the Firebase
+  // Auth side (e.g. phone/OTP sign-in whose Auth phone claim postdates doc
+  // creation). The decoded ID token's phone_number claim is the same
+  // value User.phoneNumber exposes client-side — no second/new phone
+  // source is introduced.
+  const storedPhone =
+    typeof data.phoneNumber === "string" ? data.phoneNumber.trim() : "";
+  const authPhone =
+    authToken && typeof authToken.phone_number === "string"
+      ? authToken.phone_number
+      : "";
+
   return {
     name: typeof data.name === "string" ? data.name : "",
-    phone: typeof data.phoneNumber === "string" ? data.phoneNumber : "",
+    phone: storedPhone || authPhone,
     homeAddress,
   };
+}
+
+exports.getMarketplaceCheckoutProfile = onCall({ region: "us-central1" }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "You must be signed in.");
+  }
+  const db = admin.firestore();
+  return resolveMarketplaceCheckoutProfile(db, request.auth.uid, request.auth.token);
 });
 
 // Structured failure logging (permanent) — every throw in placeMarketplaceOrder
@@ -1005,6 +1030,7 @@ exports.getMarketplaceDeliveryMethods = onCall({ region: "us-central1" }, async 
 
 // Exported for focused unit testing (tests/marketplace_checkout_guards.test.js)
 // — pure/near-pure guard logic, independent of the onCall wrapper.
+exports.resolveMarketplaceCheckoutProfile = resolveMarketplaceCheckoutProfile;
 exports.isCommerceBillingOperational = isCommerceBillingOperational;
 exports.resolveCommerceSubscriptionStatus = resolveCommerceSubscriptionStatus;
 exports.pharmacyOwnerUidFromOrgId = pharmacyOwnerUidFromOrgId;
