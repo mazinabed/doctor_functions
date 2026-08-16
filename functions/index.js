@@ -2315,6 +2315,26 @@ exports.adminListStandaloneSubscriptionPayments = adminListStandaloneSubscriptio
 exports.adminApproveStandaloneSubscriptionPayment = adminApproveStandaloneSubscriptionPayment;
 exports.adminRejectStandaloneSubscriptionPayment = adminRejectStandaloneSubscriptionPayment;
 
+// ─── TrustyDr Commerce Bridge — Sponsored Placements (Admin Control) ───────
+// Marketplace Platform Phase 5, Revenue/Control Gate correction
+// (2026-08-16). Admin-only sponsoredChannels grant/revoke + sponsorship
+// request review (mydoctor_admin -> Healthcare -> Commerce) — see
+// adminSponsoredPlacements.js's own header for the full contract. Same
+// admin gate and OIDC-authenticated Commerce call pattern as
+// adminStandaloneSubscriptionPayments.js above.
+const {
+  adminSearchOrganizations,
+  adminUpdateSponsoredChannels,
+  adminListSponsoredPlacementRequests,
+  adminApproveSponsoredPlacementRequest,
+  adminRejectSponsoredPlacementRequest,
+} = require("./commerce/adminSponsoredPlacements");
+exports.adminSearchOrganizations = adminSearchOrganizations;
+exports.adminUpdateSponsoredChannels = adminUpdateSponsoredChannels;
+exports.adminListSponsoredPlacementRequests = adminListSponsoredPlacementRequests;
+exports.adminApproveSponsoredPlacementRequest = adminApproveSponsoredPlacementRequest;
+exports.adminRejectSponsoredPlacementRequest = adminRejectSponsoredPlacementRequest;
+
 // ─── TrustyDr Commerce Bridge — Global Attribute Engine (Milestone 3) ──────
 // Admin-only CRUD (mydoctor_admin -> Healthcare -> Commerce) — see
 // adminMarketplaceAttributes.js's own header for the full contract. Same
