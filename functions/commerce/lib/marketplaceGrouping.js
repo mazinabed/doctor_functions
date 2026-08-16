@@ -159,4 +159,113 @@ function applySponsoredPlacements(groupedProducts, sponsoredPlacements) {
   });
 }
 
-module.exports = { computeGroupedProducts, rankGroupedProducts, applySponsoredPlacements };
+// Marketplace Platform Phase 5 — Patient-visibility gap correction
+// (2026-08-16). A live smoke test found BOTH sponsored placement types
+// approving successfully end to end (submit -> admin approve -> active,
+// confirmed live) but never becoming visible/ranked anywhere a patient
+// actually looks: applySponsoredPlacements above only ever touched
+// groupedProducts — a canonical-linked-only, Compare-Sellers-specific
+// data structure — never the flat, ordinary `products` list every product
+// card outside Compare Sellers renders from, and never `stores` (Browse
+// Stores) at all. A sponsored_offer for a listing with no approved
+// canonical link (confirmed live: Demo Store's actual sponsored product)
+// was therefore structurally invisible everywhere, and featured_store had
+// no connection whatsoever to store discovery/ranking.
+//
+// These two functions close exactly that gap, at the SAME seam
+// (getActiveMarketplaceStores.js, applied to `products`/`stores`
+// alongside the existing `groups` marking) — never touching
+// computeGroupedProducts/rankGroupedProducts/applySponsoredPlacements
+// above, which stay exactly as they were for Compare Sellers.
+
+/**
+ * Marks each ordinary (flat, not-necessarily-canonical-linked) product
+ * entry with `isSponsored`/`sponsoredPlacementId` for a matching
+ * "sponsored_offer" placement — orgId+engineId match only, the same exact
+ * matching discipline as applySponsoredPlacements' own offer-level
+ * marking, so a different seller's identical/competing product (even one
+ * in the very same canonical group) is never accidentally marked.
+ * "featured_store" placements are deliberately NOT applied here — they
+ * promote the store itself (see applySponsoredPlacementsToStores below),
+ * not every product that store happens to sell.
+ *
+ * @param {Array<object>} products - mergedProducts, each carrying at least orgId/engineId
+ * @param {Array<{placementId:string, orgId:string, engineId:string|null, placementType:string}>} sponsoredPlacements
+ * @returns {Array<object>} the SAME products, additively marked — every
+ *   other field (price, name, images, availability, seller identity)
+ *   passes through completely unchanged.
+ */
+function applySponsoredPlacementsToProducts(products, sponsoredPlacements) {
+  if (!Array.isArray(sponsoredPlacements) || sponsoredPlacements.length === 0) {
+    return products;
+  }
+  const offerPlacementByKey = new Map();
+  for (const placement of sponsoredPlacements) {
+    if (placement.placementType === "sponsored_offer" && placement.engineId) {
+      offerPlacementByKey.set(`${placement.orgId}_${placement.engineId}`, placement.placementId);
+    }
+  }
+  if (offerPlacementByKey.size === 0) return products;
+
+  return products.map((p) => {
+    const placementId = offerPlacementByKey.get(`${p.orgId}_${p.engineId}`);
+    if (!placementId) return p;
+    return { ...p, isSponsored: true, sponsoredPlacementId: placementId };
+  });
+}
+
+/**
+ * Marks each store with `isSponsored`/`sponsoredPlacementId` for a
+ * matching "featured_store" placement (orgId match). "sponsored_offer"
+ * placements are deliberately NOT applied here — sponsoring one product
+ * must never make the whole store read as sponsored.
+ *
+ * @param {Array<object>} stores - mergedStores, each carrying at least orgId
+ * @param {Array<{placementId:string, orgId:string, engineId:string|null, placementType:string}>} sponsoredPlacements
+ * @returns {Array<object>} the SAME stores, additively marked — every
+ *   other field (name, branding, location, product count) passes through
+ *   completely unchanged.
+ */
+function applySponsoredPlacementsToStores(stores, sponsoredPlacements) {
+  if (!Array.isArray(sponsoredPlacements) || sponsoredPlacements.length === 0) {
+    return stores;
+  }
+  const storePlacementByOrgId = new Map();
+  for (const placement of sponsoredPlacements) {
+    if (placement.placementType === "featured_store") {
+      storePlacementByOrgId.set(placement.orgId, placement.placementId);
+    }
+  }
+  if (storePlacementByOrgId.size === 0) return stores;
+
+  return stores.map((s) => {
+    const placementId = storePlacementByOrgId.get(s.orgId);
+    if (!placementId) return s;
+    return { ...s, isSponsored: true, sponsoredPlacementId: placementId };
+  });
+}
+
+/**
+ * Stores -> final display order for Browse Stores. Sponsored stores first
+ * (stable sort — every other store, sponsored or not, keeps its existing
+ * relative order beneath that split), matching rankGroupedProducts' own
+ * "additive leading tier, never a replacement" contract. A no-op when no
+ * store carries isSponsored — the exact pre-existing merge order (however
+ * getActiveMarketplaceStores.js assembled `mergedStores`) is preserved
+ * byte-for-byte.
+ */
+function rankStores(stores) {
+  return [...stores].sort((a, b) => {
+    if (Boolean(a.isSponsored) !== Boolean(b.isSponsored)) return a.isSponsored ? -1 : 1;
+    return 0;
+  });
+}
+
+module.exports = {
+  computeGroupedProducts,
+  rankGroupedProducts,
+  applySponsoredPlacements,
+  applySponsoredPlacementsToProducts,
+  applySponsoredPlacementsToStores,
+  rankStores,
+};

@@ -36,7 +36,14 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const fetch = require("node-fetch");
-const { computeGroupedProducts, rankGroupedProducts, applySponsoredPlacements } = require("./lib/marketplaceGrouping");
+const {
+  computeGroupedProducts,
+  rankGroupedProducts,
+  applySponsoredPlacements,
+  applySponsoredPlacementsToProducts,
+  applySponsoredPlacementsToStores,
+  rankStores,
+} = require("./lib/marketplaceGrouping");
 
 const COMMERCE_STORE_DISCOVERY_BRIDGE_URL =
   "https://us-central1-trustydr-commerce.cloudfunctions.net/getActiveMarketplaceStoresForHealthcare";
@@ -518,6 +525,53 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   const mergedCategories = categories.length > 0 ? categories : standaloneCategories;
   const mergedHasMoreProducts = hasMoreProducts || standaloneHasMoreProducts;
 
+  // Marketplace Platform Phase 5 — Patient-visibility gap correction
+  // (2026-08-16). Fetched ONCE here (was previously fetched a second time,
+  // nested inside the grouped-links branch below, and used ONLY for
+  // groupedProducts — a live smoke test found this meant a sponsored_offer
+  // for a listing with no approved canonical link, and every featured_store
+  // placement, were never applied anywhere at all). Best-effort, same
+  // fail-open posture as every other bridge call in this function: a
+  // failure here leaves `sponsoredPlacements` empty, which every
+  // apply*/rank* call below already treats as a documented no-op —
+  // `stores`/`products`/`groupedProducts` degrade to their exact
+  // pre-Phase-5 organic order, never blocked or altered otherwise.
+  let sponsoredPlacements = [];
+  try {
+    const allOrgIds = [...new Set([...mergedStores.map((s) => s.orgId), ...mergedProducts.map((p) => p.orgId)])];
+    if (allOrgIds.length > 0) {
+      const sponsoredResponse = await fetch(COMMERCE_SPONSORED_PLACEMENTS_BRIDGE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgIds: allOrgIds, surface: "marketplace_discover", channel: "b2c" }),
+      });
+      if (sponsoredResponse.ok) {
+        const { placements } = await sponsoredResponse.json();
+        sponsoredPlacements = Array.isArray(placements) ? placements : [];
+      } else {
+        console.error(
+          "[getActiveMarketplaceStores] Sponsored Placements Bridge returned status:",
+          sponsoredResponse.status,
+        );
+      }
+    }
+  } catch (err) {
+    console.error("[getActiveMarketplaceStores] network error reaching Sponsored Placements Bridge:", err);
+  }
+
+  // Featured-store sponsorship — Browse Stores. Additive marking +
+  // sponsored-first stable sort; a no-op (byte-for-byte original merge
+  // order) whenever sponsoredPlacements is empty.
+  const sponsoredStores = rankStores(applySponsoredPlacementsToStores(mergedStores, sponsoredPlacements));
+
+  // sponsored_offer sponsorship on the ORDINARY (not-necessarily-canonical-
+  // linked) product list — the flat list every product card outside
+  // Compare Sellers renders from. No re-ordering here (this function has
+  // never ranked mergedProducts itself; client-side "Recommended" sort
+  // already applies its own isSponsored-first tiebreak — see
+  // marketplace_sort.dart).
+  const sponsoredProducts = applySponsoredPlacementsToProducts(mergedProducts, sponsoredPlacements);
+
   // Marketplace Platform, Phase 2 — Multi-Seller Aggregated Discovery.
   // Best-effort only: a failure here never blocks or alters the response
   // above in any way (same pattern the standalone-store merge already
@@ -525,7 +579,7 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   // — a client checking `.length` behaves identically either way.
   let groupedProducts = [];
   try {
-    const orgIdsWithProducts = [...new Set(mergedProducts.map((p) => p.orgId))];
+    const orgIdsWithProducts = [...new Set(sponsoredProducts.map((p) => p.orgId))];
     if (orgIdsWithProducts.length > 0) {
       const groupedLinksResponse = await fetch(COMMERCE_GROUPED_LINKS_BRIDGE_URL, {
         method: "POST",
@@ -534,37 +588,12 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
       });
       if (groupedLinksResponse.ok) {
         const { links, canonicalProducts } = await groupedLinksResponse.json();
-        let groups = computeGroupedProducts(
-          mergedProducts,
+        const groups = computeGroupedProducts(
+          sponsoredProducts,
           Array.isArray(links) ? links : [],
           Array.isArray(canonicalProducts) ? canonicalProducts : [],
         );
-
-        // Marketplace Platform Phase 5 — SEPARATE nested best-effort call,
-        // deliberately its own try/catch so a sponsored-fetch failure only
-        // degrades to organic-only ranking (the exact same `groups` that
-        // would have been ranked before this phase) without affecting the
-        // grouped-links call above it in any way.
-        try {
-          const sponsoredResponse = await fetch(COMMERCE_SPONSORED_PLACEMENTS_BRIDGE_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ orgIds: orgIdsWithProducts, surface: "marketplace_discover", channel: "b2c" }),
-          });
-          if (sponsoredResponse.ok) {
-            const { placements } = await sponsoredResponse.json();
-            groups = applySponsoredPlacements(groups, Array.isArray(placements) ? placements : []);
-          } else {
-            console.error(
-              "[getActiveMarketplaceStores] Sponsored Placements Bridge returned status:",
-              sponsoredResponse.status,
-            );
-          }
-        } catch (err) {
-          console.error("[getActiveMarketplaceStores] network error reaching Sponsored Placements Bridge:", err);
-        }
-
-        groupedProducts = rankGroupedProducts(groups);
+        groupedProducts = rankGroupedProducts(applySponsoredPlacements(groups, sponsoredPlacements));
       } else {
         console.error(
           "[getActiveMarketplaceStores] Grouped Links Bridge returned status:",
@@ -577,8 +606,8 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   }
 
   return {
-    stores: mergedStores,
-    products: mergedProducts,
+    stores: sponsoredStores,
+    products: sponsoredProducts,
     categories: mergedCategories,
     hasMoreProducts: mergedHasMoreProducts,
     groupedProducts,

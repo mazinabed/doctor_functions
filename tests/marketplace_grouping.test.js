@@ -13,6 +13,9 @@ const {
   computeGroupedProducts,
   rankGroupedProducts,
   applySponsoredPlacements,
+  applySponsoredPlacementsToProducts,
+  applySponsoredPlacementsToStores,
+  rankStores,
 } = require('../functions/commerce/lib/marketplaceGrouping');
 
 const CANONICAL_PANADOL = {
@@ -281,5 +284,136 @@ describe('applySponsoredPlacements', () => {
     applySponsoredPlacements(groups, placements);
     expect(original.isSponsored).toBeUndefined();
     expect(groups[0].isSponsored).toBeUndefined();
+  });
+});
+
+// Marketplace Platform Phase 5 — Patient-visibility gap correction
+// (2026-08-16). A live smoke test found BOTH placement types approving
+// successfully end to end but never reaching any Patient-facing surface:
+// applySponsoredPlacements above only ever touched groupedProducts
+// (canonical-linked listings only); the flat `products` list and `stores`
+// were never marked at all. These tests exercise the two new functions
+// that close that gap, reproducing the real reported scenarios: one
+// sponsored store among organic stores, one sponsored (non-canonical-
+// linked) product among organic products, and the "only one seller of a
+// shared canonical product sponsors" isolation requirement.
+describe('applySponsoredPlacementsToProducts', () => {
+  function flatProduct(overrides) {
+    return { orgId: 'org_a', engineId: 'engine_a', name_en: 'Panadol', displayPrice: 5000, ...overrides };
+  }
+
+  it('is a no-op when sponsoredPlacements is empty/undefined (regression: exact same products returned)', () => {
+    const products = [flatProduct({})];
+    expect(applySponsoredPlacementsToProducts(products, [])).toBe(products);
+    expect(applySponsoredPlacementsToProducts(products, undefined)).toBe(products);
+  });
+
+  it('marks ONLY the matching sponsored_offer product — a non-sponsored organic product in the same list is untouched', () => {
+    const sponsored = flatProduct({ orgId: 'org_a', engineId: 'engine_a' });
+    const organic = flatProduct({ orgId: 'org_b', engineId: 'engine_b', name_en: 'Ibuprofen' });
+    const placements = [{ placementId: 'p1', orgId: 'org_a', engineId: 'engine_a', placementType: 'sponsored_offer' }];
+
+    const result = applySponsoredPlacementsToProducts([sponsored, organic], placements);
+
+    expect(result[0].isSponsored).toBe(true);
+    expect(result[0].sponsoredPlacementId).toBe('p1');
+    expect(result[1].isSponsored).toBeUndefined();
+  });
+
+  it('a listing with no approved canonical link (never appears in groupedProducts) is still sponsorship-aware here — the exact live gap this correction closes', () => {
+    // Reproduces the real live scenario: Demo Store's sponsored product
+    // (engineId "73") had no approved canonical_product_links entry, so it
+    // never appeared in groupedProducts at all — this is the flat list it
+    // DOES appear in.
+    const uncanonicalized = flatProduct({ orgId: 'OIH67W4vZjLPV7SVa3bd', engineId: '73' });
+    const placements = [
+      { placementId: 'LlDPHbRPlNpYrro3cKRk', orgId: 'OIH67W4vZjLPV7SVa3bd', engineId: '73', placementType: 'sponsored_offer' },
+    ];
+    const result = applySponsoredPlacementsToProducts([uncanonicalized], placements);
+    expect(result[0].isSponsored).toBe(true);
+  });
+
+  it('canonical product with multiple sellers, only one sponsors — the OTHER seller of the identical product is never marked', () => {
+    // Same canonical product (matching name_en), two different orgs —
+    // exactly the "compare sellers" scenario the correction must never
+    // break: sponsoring org_a's listing must never leak onto org_b's
+    // listing of the same underlying product.
+    const sellerA = flatProduct({ orgId: 'org_a', engineId: 'engine_a', displayPrice: 5000 });
+    const sellerB = flatProduct({ orgId: 'org_b', engineId: 'engine_b', displayPrice: 4750 });
+    const placements = [{ placementId: 'p2', orgId: 'org_a', engineId: 'engine_a', placementType: 'sponsored_offer' }];
+
+    const result = applySponsoredPlacementsToProducts([sellerA, sellerB], placements);
+
+    expect(result[0].isSponsored).toBe(true);
+    expect(result[1].isSponsored).toBeUndefined();
+    expect(result[1].orgId).toBe('org_b');
+  });
+
+  it('featured_store placements are never applied to products — sponsoring the store must not badge every product it sells', () => {
+    const products = [flatProduct({ orgId: 'org_a', engineId: 'engine_a' })];
+    const placements = [{ placementId: 'p3', orgId: 'org_a', engineId: null, placementType: 'featured_store' }];
+    const result = applySponsoredPlacementsToProducts(products, placements);
+    expect(result[0].isSponsored).toBeUndefined();
+  });
+
+  it('never mutates the input array or its product objects', () => {
+    const original = flatProduct({ orgId: 'org_a', engineId: 'engine_a' });
+    const products = [original];
+    applySponsoredPlacementsToProducts(products, [{ placementId: 'p4', orgId: 'org_a', engineId: 'engine_a', placementType: 'sponsored_offer' }]);
+    expect(original.isSponsored).toBeUndefined();
+  });
+});
+
+describe('applySponsoredPlacementsToStores + rankStores', () => {
+  function store(overrides) {
+    return { orgId: 'org_a', facilityName_en: 'Al Noor Pharmacy', ...overrides };
+  }
+
+  it('applySponsoredPlacementsToStores is a no-op when sponsoredPlacements is empty/undefined', () => {
+    const stores = [store({})];
+    expect(applySponsoredPlacementsToStores(stores, [])).toBe(stores);
+    expect(applySponsoredPlacementsToStores(stores, undefined)).toBe(stores);
+  });
+
+  it('marks ONLY the featured_store-sponsored store — an organic store in the same list is untouched', () => {
+    const sponsored = store({ orgId: 'org_a', facilityName_en: 'Demo Store' });
+    const organic = store({ orgId: 'org_b', facilityName_en: 'Baghdad Central Pharmacy' });
+    const placements = [{ placementId: 'p5', orgId: 'org_a', engineId: null, placementType: 'featured_store' }];
+
+    const result = applySponsoredPlacementsToStores([sponsored, organic], placements);
+
+    expect(result[0].isSponsored).toBe(true);
+    expect(result[0].sponsoredPlacementId).toBe('p5');
+    expect(result[1].isSponsored).toBeUndefined();
+  });
+
+  it('sponsored_offer placements are never applied to stores', () => {
+    const stores = [store({ orgId: 'org_a' })];
+    const placements = [{ placementId: 'p6', orgId: 'org_a', engineId: 'engine_a', placementType: 'sponsored_offer' }];
+    const result = applySponsoredPlacementsToStores(stores, placements);
+    expect(result[0].isSponsored).toBeUndefined();
+  });
+
+  it('rankStores ranks the sponsored store ahead of organic stores, regardless of original merge order', () => {
+    const organic1 = { orgId: 'org_b', facilityName_en: 'Baghdad Central Pharmacy' };
+    const sponsored = { orgId: 'org_a', facilityName_en: 'Demo Store', isSponsored: true, sponsoredPlacementId: 'p5' };
+    const organic2 = { orgId: 'org_c', facilityName_en: 'Kut Pharmacy' };
+
+    const ranked = rankStores([organic1, sponsored, organic2]);
+
+    expect(ranked.map((s) => s.orgId)).toEqual(['org_a', 'org_b', 'org_c']);
+  });
+
+  it('rankStores is a complete no-op when no store carries isSponsored (exact original merge order preserved)', () => {
+    const stores = [{ orgId: 'org_b' }, { orgId: 'org_a' }, { orgId: 'org_c' }];
+    const ranked = rankStores(stores);
+    expect(ranked.map((s) => s.orgId)).toEqual(['org_b', 'org_a', 'org_c']);
+  });
+
+  it('rankStores does not mutate the input array', () => {
+    const input = [{ orgId: 'org_b' }, { orgId: 'org_a', isSponsored: true }];
+    const inputCopy = [...input];
+    rankStores(input);
+    expect(input).toEqual(inputCopy);
   });
 });
