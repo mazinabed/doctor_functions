@@ -2335,6 +2335,24 @@ exports.adminListSponsoredPlacementRequests = adminListSponsoredPlacementRequest
 exports.adminApproveSponsoredPlacementRequest = adminApproveSponsoredPlacementRequest;
 exports.adminRejectSponsoredPlacementRequest = adminRejectSponsoredPlacementRequest;
 
+// ─── TrustyDr Commerce Bridge — B2B Seller Regulatory Applications (Admin Control) ───
+// Healthcare Wholesale Marketplace — Regulatory/Entitlement Foundation
+// (Phase 4B.1, 2026-08-16/17). Admin-only seller regulatory-application
+// review (pharmaceutical wholesale, etc.) — mydoctor_admin -> Healthcare ->
+// Commerce — see adminB2BRegulatory.js's own header for the full contract.
+// Same admin gate and OIDC-authenticated Commerce call pattern as
+// adminSponsoredPlacements.js above.
+const {
+  adminListSellerRegulatoryApplications,
+  adminGetSellerRegulatoryDocument,
+  adminApproveSellerRegulatoryApplication,
+  adminRejectSellerRegulatoryApplication,
+} = require("./commerce/adminB2BRegulatory");
+exports.adminListSellerRegulatoryApplications = adminListSellerRegulatoryApplications;
+exports.adminGetSellerRegulatoryDocument = adminGetSellerRegulatoryDocument;
+exports.adminApproveSellerRegulatoryApplication = adminApproveSellerRegulatoryApplication;
+exports.adminRejectSellerRegulatoryApplication = adminRejectSellerRegulatoryApplication;
+
 // ─── TrustyDr Commerce Bridge — Global Attribute Engine (Milestone 3) ──────
 // Admin-only CRUD (mydoctor_admin -> Healthcare -> Commerce) — see
 // adminMarketplaceAttributes.js's own header for the full contract. Same
