@@ -83,6 +83,15 @@ async function resolveHealthcareLegalCoverage({
   role,
   isPharmacyStaff,
   pharmacyStaffPharmacyId,
+  // Phase 4B.2 (2026-08-17) — optional, pre-resolved owned-center snapshot.
+  // The main handler now resolves this ONCE (it also needs ownedCenterId/
+  // doctorClinicName for Commerce activation eligibility, not just legal
+  // coverage) and passes it in here so this function never re-queries
+  // medical_centers a second time for the same caller. Omitted entirely by
+  // any other caller of this function (none exist today) falls back to the
+  // original inline query, preserving this function's own standalone
+  // correctness.
+  ownedCenterSnap: precomputedOwnedCenterSnap,
 }) {
   const legalConfig = await getLegalConfig();
 
@@ -106,11 +115,10 @@ async function resolveHealthcareLegalCoverage({
   // if any — a direct ownerId query, not the possibly-stale
   // users/{uid}.centerId field, so this never depends on that field being
   // populated correctly.
-  const ownedCenterSnap = await db
-    .collection("medical_centers")
-    .where("ownerId", "==", uid)
-    .limit(1)
-    .get();
+  const ownedCenterSnap =
+    precomputedOwnedCenterSnap !== undefined
+      ? precomputedOwnedCenterSnap
+      : await db.collection("medical_centers").where("ownerId", "==", uid).limit(1).get();
   if (!ownedCenterSnap.empty) {
     return buildLegalCoverage(
       "medical_center",
@@ -264,6 +272,44 @@ exports.resolveAccessContext = onRequest(
           : null;
       }
 
+      // Phase 4B.2 (Healthcare <-> Commerce Bridge Generalization,
+      // 2026-08-17) — resolved once here (not duplicated inside
+      // resolveHealthcareLegalCoverage below) for the two NEW roles the
+      // bridge now supports: diagnostic_provider (lab) and doctor
+      // (medical_center owner). Both null/false for a pharmacy_provider or
+      // pharmacy-staff caller — these fields are only ever meaningful for
+      // their own role.
+      let labProviderStatus = null;
+      let labFacilityName = null;
+      if (role === "diagnostic_provider") {
+        const labDoc = await db.collection("diagnostic_providers").doc(uid).get();
+        labProviderStatus = labDoc.exists ? normalizeStatus(labDoc.data().status) : null;
+        labFacilityName = labDoc.exists ? labDoc.data().facilityName_en || null : null;
+      }
+
+      let doctorIsVerified = false;
+      let doctorClinicName = null;
+      let ownedCenterId = null;
+      let ownedCenterSnap = undefined;
+      if (role === "doctor") {
+        const doctorDoc = await db.collection("doctors").doc(uid).get();
+        doctorIsVerified = doctorDoc.exists && doctorDoc.data().isVerified === true;
+        doctorClinicName = doctorDoc.exists
+          ? doctorDoc.data().clinicName_en || doctorDoc.data().clinicName || null
+          : null;
+
+        // Same "the center this caller OWNS" ownerId query
+        // resolveHealthcareLegalCoverage below would otherwise run itself —
+        // resolved ONCE here and passed down, so a doctor caller never
+        // costs two medical_centers queries for one request.
+        ownedCenterSnap = await db
+          .collection("medical_centers")
+          .where("ownerId", "==", uid)
+          .limit(1)
+          .get();
+        ownedCenterId = !ownedCenterSnap.empty ? ownedCenterSnap.docs[0].id : null;
+      }
+
       if (ownerCenterId) {
         const centerSnap = await db
           .collection("medical_centers")
@@ -299,6 +345,7 @@ exports.resolveAccessContext = onRequest(
         role,
         isPharmacyStaff,
         pharmacyStaffPharmacyId,
+        ownedCenterSnap,
       });
 
       res.status(200).json({
@@ -310,6 +357,11 @@ exports.resolveAccessContext = onRequest(
         pharmacyStaffPharmacyId,
         pharmacyStaffStoreAccess,
         pharmacyStaffPhoneNumber,
+        labProviderStatus,
+        labFacilityName,
+        doctorIsVerified,
+        doctorClinicName,
+        ownedCenterId,
         pharmacyCommerceSubscriptionStatus,
         pharmacyCommerceTrialStart,
         pharmacyCommerceTrialEnds,
