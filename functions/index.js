@@ -2353,6 +2353,23 @@ exports.adminGetSellerRegulatoryDocument = adminGetSellerRegulatoryDocument;
 exports.adminApproveSellerRegulatoryApplication = adminApproveSellerRegulatoryApplication;
 exports.adminRejectSellerRegulatoryApplication = adminRejectSellerRegulatoryApplication;
 
+// ─── TrustyDr Commerce Bridge — B2B Marketplace Channels & Buyer Entitlement (Admin Control) ───
+// Phase 4B.5, 2026-08-18. Admin-only grant/revoke of organizations/{orgId}.
+// marketplaceChannels (base B2B/B2C selling access) and .buyerScopes
+// (Healthcare Wholesale Marketplace buyer access for a standalone Commerce
+// org) — mydoctor_admin -> Healthcare -> Commerce — see
+// adminB2BMarketplaceAccess.js's own header for the full contract. Same
+// admin gate and OIDC-authenticated Commerce call pattern as
+// adminSponsoredPlacements.js/adminB2BRegulatory.js above; organization
+// search reuses adminSearchOrganizations (adminSponsoredPlacements.js),
+// never a second search endpoint.
+const {
+  adminUpdateMarketplaceChannels,
+  adminGrantBuyerScopes,
+} = require("./commerce/adminB2BMarketplaceAccess");
+exports.adminUpdateMarketplaceChannels = adminUpdateMarketplaceChannels;
+exports.adminGrantBuyerScopes = adminGrantBuyerScopes;
+
 // ─── TrustyDr Commerce Bridge — Global Attribute Engine (Milestone 3) ──────
 // Admin-only CRUD (mydoctor_admin -> Healthcare -> Commerce) — see
 // adminMarketplaceAttributes.js's own header for the full contract. Same
