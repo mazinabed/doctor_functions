@@ -38,6 +38,19 @@ function isoOrNull(timestamp) {
   return timestamp ? timestamp.toDate().toISOString() : null;
 }
 
+// Phone-verification bridge correction (2026-08-18) — pure extraction (same
+// discipline as resolveHealthcareLegalCoverage below) so this one-line
+// decision is unit-testable without an emulator or a real ID token. `decoded`
+// is the ALREADY-VERIFIED result of admin.auth().verifyIdToken() — Firebase
+// Phone Auth only ever populates phone_number on a token after a real OTP
+// verification, so this is authoritative by construction, never a
+// client-supplied or Firestore-cached value.
+function resolveVerifiedPhoneNumber(decoded) {
+  return (decoded && decoded.phone_number) || null;
+}
+
+exports.resolveVerifiedPhoneNumber = resolveVerifiedPhoneNumber;
+
 // Legal Consent Modernization (Phase 3 — Healthcare→Commerce bridge
 // entitlement). Read-only, resolved FRESH on every call directly from the
 // same facility doc Phase 2's acceptFacilityLegalAgreement writes to
@@ -159,6 +172,12 @@ exports.resolveAccessContext = onRequest(
     }
 
     const uid = decoded.uid;
+    // Commerce uses this (see trustydr-commerce/functions/src/activation.ts)
+    // to reconcile the SAME verified phone onto the bridged Commerce Auth
+    // user, so a Healthcare-origin provider's phone-verification gate
+    // reflects an identity Healthcare has actually verified, not a client
+    // claim.
+    const phoneNumber = resolveVerifiedPhoneNumber(decoded);
     const db = admin.firestore();
 
     try {
@@ -351,6 +370,7 @@ exports.resolveAccessContext = onRequest(
       res.status(200).json({
         uid,
         role,
+        phoneNumber,
         isPharmacyStaff,
         pharmacyProviderStatus,
         pharmacyClinicName,
