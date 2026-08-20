@@ -310,6 +310,18 @@ exports.resolveAccessContext = onRequest(
       let doctorClinicName = null;
       let ownedCenterId = null;
       let ownedCenterSnap = undefined;
+      // Buyer-address bridge correction (2026-08-20) — see this file's own
+      // header note above resolveHealthcareLegalCoverage on why medical
+      // centers are resolved via a direct ownerId query. Sourced from the
+      // SAME ownedCenterSnap read below (zero extra Firestore read) — the
+      // full medical_centers document, including the location/contact
+      // fields doctor_portal's own Center Profile tab writes
+      // (features/center/data/ui/tabs/center_profile_page.dart), which
+      // were never read or forwarded by this bridge before now.
+      let medicalCenterProvinceKey = null;
+      let medicalCenterCityKey = null;
+      let medicalCenterAddress = null;
+      let medicalCenterPhone = null;
       if (role === "doctor") {
         const doctorDoc = await db.collection("doctors").doc(uid).get();
         doctorIsVerified = doctorDoc.exists && doctorDoc.data().isVerified === true;
@@ -327,6 +339,19 @@ exports.resolveAccessContext = onRequest(
           .limit(1)
           .get();
         ownedCenterId = !ownedCenterSnap.empty ? ownedCenterSnap.docs[0].id : null;
+
+        if (!ownedCenterSnap.empty) {
+          const ownedCenterData = ownedCenterSnap.docs[0].data();
+          medicalCenterProvinceKey = ownedCenterData.provinceKey || null;
+          medicalCenterCityKey = ownedCenterData.cityKey || null;
+          // clinicAddress is the canonical English-preferred fallback
+          // center_profile_page.dart already computes at save time from
+          // whichever of clinicAddress_en/_ar/_ku is filled in — matches
+          // Commerce's own streetAddress, which has no per-language
+          // variant either.
+          medicalCenterAddress = ownedCenterData.clinicAddress || null;
+          medicalCenterPhone = ownedCenterData.phone || null;
+        }
       }
 
       if (ownerCenterId) {
@@ -382,6 +407,10 @@ exports.resolveAccessContext = onRequest(
         doctorIsVerified,
         doctorClinicName,
         ownedCenterId,
+        medicalCenterProvinceKey,
+        medicalCenterCityKey,
+        medicalCenterAddress,
+        medicalCenterPhone,
         pharmacyCommerceSubscriptionStatus,
         pharmacyCommerceTrialStart,
         pharmacyCommerceTrialEnds,
