@@ -154,6 +154,15 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   let categories = [];
   let hasMoreProducts = false;
 
+  // Performance Round 1 (2026-08-25) — the pharmacy path's own Firestore
+  // lookups + Commerce Bridge fetch, and the standalone-store Bridge fetch
+  // below, are fully independent (neither reads the other's output; they
+  // write to disjoint `let` variables, merged together only after both
+  // finish). Previously sequential (whole pharmacy path, then the whole
+  // standalone fetch); now started concurrently via two IIFEs and awaited
+  // together with Promise.all. Internal logic of each path is completely
+  // unchanged — only WHEN they start relative to each other changed.
+  const pharmacyWork = (async () => {
   pharmacyPath: if (candidates.length > 0) {
     // Resolve each candidate owner's centerId, then batch-get medical_centers
     // for billing status. Bounded by MAX_CANDIDATES — never an unbounded fan-out.
@@ -336,6 +345,7 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
 
     hasMoreProducts = commerceResponse.hasMoreProducts === true;
   }
+  })();
 
   // Standalone Patient Marketplace Discovery, Stage 1 (2026-08-04) — a
   // SEPARATE, additive fetch merged in below. Everything above this point
@@ -351,6 +361,7 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   let standaloneProducts = [];
   let standaloneCategories = [];
   let standaloneHasMoreProducts = false;
+  const standaloneWork = (async () => {
   try {
     const standaloneResponse = await fetch(STANDALONE_STORE_DISCOVERY_BRIDGE_URL, {
       method: "POST",
@@ -519,6 +530,9 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
       err,
     );
   }
+  })();
+
+  await Promise.all([pharmacyWork, standaloneWork]);
 
   const mergedStores = [...stores, ...standaloneStores].slice(0, resultLimit);
   const mergedProducts = [...products, ...standaloneProducts];
