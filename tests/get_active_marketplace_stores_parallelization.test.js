@@ -52,3 +52,63 @@ describe("getActiveMarketplaceStores.js pharmacy/standalone parallelization", ()
     expect(() => new Function(source)).not.toThrow();
   });
 });
+
+// Patient Performance Round 2 (2026-09-08) — sponsored-placements /
+// grouped-links Commerce Bridge parallelization fix. The grouped-links
+// fetch only needs mergedProducts' orgIds (applySponsoredPlacementsToProducts
+// is a pure 1:1 .map(), never changes the orgId set), so it never actually
+// needed to wait for the sponsored-placements fetch to finish first — only
+// the final grouping/ranking computation genuinely needs sponsoredPlacements.
+describe("getActiveMarketplaceStores.js sponsored/grouped-links parallelization", () => {
+  const source = fs.readFileSync(SOURCE_PATH, "utf8");
+
+  test("both fetches are started as concurrent IIFEs, not run sequentially", () => {
+    expect(source).toContain("const sponsoredWork = (async () => {");
+    expect(source).toContain("const groupedLinksWork = (async () => {");
+    expect(source).toContain("await Promise.all([sponsoredWork, groupedLinksWork]);");
+  });
+
+  test("both IIFEs are declared, and Promise.all is awaited, BEFORE the grouping computation reads their outputs", () => {
+    const sponsoredIndex = source.indexOf("const sponsoredWork = (async () => {");
+    const groupedIndex = source.indexOf("const groupedLinksWork = (async () => {");
+    const promiseAllIndex = source.indexOf("await Promise.all([sponsoredWork, groupedLinksWork]);");
+    const sponsoredProductsIndex = source.indexOf(
+      "const sponsoredProducts = applySponsoredPlacementsToProducts(mergedProducts, sponsoredPlacements);",
+    );
+    const groupedComputeIndex = source.indexOf("if (groupedLinksResult !== null) {");
+
+    expect(sponsoredIndex).toBeGreaterThan(-1);
+    expect(groupedIndex).toBeGreaterThan(sponsoredIndex);
+    expect(promiseAllIndex).toBeGreaterThan(groupedIndex);
+    expect(sponsoredProductsIndex).toBeGreaterThan(promiseAllIndex);
+    expect(groupedComputeIndex).toBeGreaterThan(sponsoredProductsIndex);
+  });
+
+  test("the grouped-links fetch derives its orgId set from mergedProducts directly, not from sponsoredProducts (no false dependency on the sponsored fetch)", () => {
+    expect(source).toContain("const orgIdsWithProducts = [...new Set(mergedProducts.map((p) => p.orgId))];");
+  });
+
+  test("groupedLinksResult is null unless the fetch both ran and succeeded, mirroring the original gating", () => {
+    expect(source).toContain("let groupedLinksResult = null;");
+    expect(source).toMatch(/groupedLinksResult = \{\s*links: Array\.isArray\(links\) \? links : \[\],/);
+  });
+
+  test("each fetch keeps its own independent try/catch (a failure in one must never abort the other)", () => {
+    const sponsoredBlock = source.slice(
+      source.indexOf("const sponsoredWork = (async () => {"),
+      source.indexOf("})();", source.indexOf("const sponsoredWork = (async () => {")),
+    );
+    const groupedBlock = source.slice(
+      source.indexOf("const groupedLinksWork = (async () => {"),
+      source.indexOf("})();", source.indexOf("const groupedLinksWork = (async () => {")),
+    );
+    expect(sponsoredBlock).toContain("try {");
+    expect(sponsoredBlock).toContain("network error reaching Sponsored Placements Bridge");
+    expect(groupedBlock).toContain("try {");
+    expect(groupedBlock).toContain("network error reaching Grouped Links Bridge");
+  });
+
+  test("syntax is valid (catches a mismatched brace from the IIFE wrapping)", () => {
+    expect(() => new Function(source)).not.toThrow();
+  });
+});

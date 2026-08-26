@@ -550,7 +550,20 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   // apply*/rank* call below already treats as a documented no-op —
   // `stores`/`products`/`groupedProducts` degrade to their exact
   // pre-Phase-5 organic order, never blocked or altered otherwise.
+  // Performance Round 2 (2026-09-08) — the sponsored-placements fetch and
+  // the grouped-links fetch are independent network calls (grouped-links
+  // only needs mergedProducts' orgIds — applySponsoredPlacementsToProducts
+  // is a pure 1:1 .map() that never adds/removes orgIds, so the org-id set
+  // is identical whether computed from mergedProducts or sponsoredProducts).
+  // Previously sequential (whole sponsored fetch, then the whole grouped
+  // fetch); now started concurrently via two IIFEs, same pattern as the
+  // pharmacy/standalone parallelization above. Only the FINAL
+  // grouping/ranking computation (which genuinely needs sponsoredPlacements
+  // to mark isSponsored/rank groups) still runs after both resolve — same
+  // final output, same ordering, same independent best-effort error
+  // handling per path, just the two round trips now overlap.
   let sponsoredPlacements = [];
+  const sponsoredWork = (async () => {
   try {
     const allOrgIds = [...new Set([...mergedStores.map((s) => s.orgId), ...mergedProducts.map((p) => p.orgId)])];
     if (allOrgIds.length > 0) {
@@ -572,6 +585,40 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   } catch (err) {
     console.error("[getActiveMarketplaceStores] network error reaching Sponsored Placements Bridge:", err);
   }
+  })();
+
+  // null unless the fetch both ran (orgIdsWithProducts non-empty) AND
+  // succeeded — mirrors exactly when the pre-parallelization code would
+  // have called computeGroupedProducts.
+  let groupedLinksResult = null;
+  const groupedLinksWork = (async () => {
+  try {
+    const orgIdsWithProducts = [...new Set(mergedProducts.map((p) => p.orgId))];
+    if (orgIdsWithProducts.length > 0) {
+      const groupedLinksResponse = await fetch(COMMERCE_GROUPED_LINKS_BRIDGE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgIds: orgIdsWithProducts }),
+      });
+      if (groupedLinksResponse.ok) {
+        const { links, canonicalProducts } = await groupedLinksResponse.json();
+        groupedLinksResult = {
+          links: Array.isArray(links) ? links : [],
+          canonicalProducts: Array.isArray(canonicalProducts) ? canonicalProducts : [],
+        };
+      } else {
+        console.error(
+          "[getActiveMarketplaceStores] Grouped Links Bridge returned status:",
+          groupedLinksResponse.status,
+        );
+      }
+    }
+  } catch (err) {
+    console.error("[getActiveMarketplaceStores] network error reaching Grouped Links Bridge:", err);
+  }
+  })();
+
+  await Promise.all([sponsoredWork, groupedLinksWork]);
 
   // Featured-store sponsorship — Browse Stores. Additive marking +
   // sponsored-first stable sort; a no-op (byte-for-byte original merge
@@ -592,31 +639,13 @@ exports.getActiveMarketplaceStores = onCall({ region: "us-central1" }, async (re
   // established). `groupedProducts` is empty, not missing, on any failure
   // — a client checking `.length` behaves identically either way.
   let groupedProducts = [];
-  try {
-    const orgIdsWithProducts = [...new Set(sponsoredProducts.map((p) => p.orgId))];
-    if (orgIdsWithProducts.length > 0) {
-      const groupedLinksResponse = await fetch(COMMERCE_GROUPED_LINKS_BRIDGE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orgIds: orgIdsWithProducts }),
-      });
-      if (groupedLinksResponse.ok) {
-        const { links, canonicalProducts } = await groupedLinksResponse.json();
-        const groups = computeGroupedProducts(
-          sponsoredProducts,
-          Array.isArray(links) ? links : [],
-          Array.isArray(canonicalProducts) ? canonicalProducts : [],
-        );
-        groupedProducts = rankGroupedProducts(applySponsoredPlacements(groups, sponsoredPlacements));
-      } else {
-        console.error(
-          "[getActiveMarketplaceStores] Grouped Links Bridge returned status:",
-          groupedLinksResponse.status,
-        );
-      }
-    }
-  } catch (err) {
-    console.error("[getActiveMarketplaceStores] network error reaching Grouped Links Bridge:", err);
+  if (groupedLinksResult !== null) {
+    const groups = computeGroupedProducts(
+      sponsoredProducts,
+      groupedLinksResult.links,
+      groupedLinksResult.canonicalProducts,
+    );
+    groupedProducts = rankGroupedProducts(applySponsoredPlacements(groups, sponsoredPlacements));
   }
 
   return {
