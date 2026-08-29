@@ -280,6 +280,27 @@ service cloud.firestore {
       return isDoctor();
     }
 
+    // Medication authoring authority — Prescription Platform Phase 1 (ADR-014).
+    // Deliberate sibling of canReleaseClinicalResults() above: same named
+    // clinical seam, so the policy can be widened in ONE place later rather
+    // than at every call site.
+    //
+    // Clause 1 — a prescribing clinician, scoped to the center being written
+    //   to. Same composite the clinical_requests create rule already uses
+    //   (doctorId == request.auth.uid && isCenterMember(...)). A doctor must be
+    //   able to add a missing medication mid-consultation without waiting for
+    //   an administrator.
+    // Clause 2 — center administration, for curation of the library.
+    //
+    // Excluded by construction: receptionist, nurse, technician, manager, and
+    // any doctor who is not a member of this center. CenterPermission is NOT
+    // used here — it gates UI only and is never read by these rules, so it is
+    // not an authorization boundary (ADR-014, "Related finding").
+    function canAuthorMedications(centerId) {
+      return (isDoctor() && isCenterMember(centerId))
+        || isCenterAdminMember(centerId);
+    }
+
     // ── Lab helper functions ─────────────────────────────────────────────────
     // Scoped to diagnostic_providers/{labId}/lab_members — separate subcollection
     // from center 'members', so no collectionGroup collision is possible.
@@ -1324,6 +1345,70 @@ service cloud.firestore {
           && request.resource.data.centerId == resource.data.centerId
           && request.resource.data.createdByUid == resource.data.createdByUid
           && request.resource.data.createdAt == resource.data.createdAt;
+
+        allow delete: if false;
+      }
+
+      // ── medical_centers/{centerId}/medications/{medicationId} ────────────
+      //
+      // Center medication library — Prescription Platform Phase 1 (ADR-014).
+      //
+      // READ:    any signed-in center member, reception included. Reading the
+      //          medication vocabulary is NOT reading a patient's prescription
+      //          — the two are separate permissions and stay separate.
+      // CREATE:  canAuthorMedications(centerId) — a prescribing clinician at
+      //          this center, or a center admin. Server-derived fields must be
+      //          absent; onCenterMedicationWritten owns them.
+      // UPDATE:  center admin (curation + archive), OR the creating clinician
+      //          correcting their own entry, restricted to identity/default
+      //          fields. Ownership and lifecycle fields are unreachable on the
+      //          self-correction path.
+      // DELETE:  never — archive via isActive, matching every other center
+      //          subcollection.
+      //
+      match /medications/{medicationId} {
+        // normalizedKey / searchTokens / derivedAt are computed server-side by
+        // onCenterMedicationWritten (ADR-014 requires the dedup algorithm be
+        // changeable without a client release). No client may write them.
+        function touchesDerivedMedicationFields() {
+          return request.resource.data.diff(resource.data).affectedKeys()
+                   .hasAny(['normalizedKey', 'searchTokens', 'derivedAt']);
+        }
+
+        allow read: if isSignedIn() && isCenterMember(centerId);
+
+        allow create: if isSignedIn()
+          && canAuthorMedications(centerId)
+          && request.resource.data.centerId == centerId
+          && request.resource.data.isActive == true
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.get('displayName', '') is string
+          && request.resource.data.get('displayName', '').size() > 0
+          && !request.resource.data.keys()
+               .hasAny(['normalizedKey', 'searchTokens', 'derivedAt']);
+
+        // Center admin: curation and archive/restore (isActive).
+        // Immutable: centerId, createdBy, createdAt, and every derived field.
+        allow update: if isSignedIn()
+          && isCenterAdminMember(centerId)
+          && !touchesDerivedMedicationFields()
+          && request.resource.data.centerId == resource.data.centerId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt;
+
+        // Doctor self-correction on their OWN entry (ADR-014 §4). The hasOnly
+        // ceiling keeps centerId, createdBy, createdAt, isActive, catalogId,
+        // isLocal and every derived field unreachable — a clinician may fix
+        // their own typo but can never archive, re-own, or re-scope a
+        // medication, and can never forge the dedup key.
+        allow update: if isSignedIn()
+          && resource.data.createdBy == request.auth.uid
+          && canAuthorMedications(centerId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'displayName', 'genericName', 'brandName',
+               'dosageForm', 'strength', 'strengthUnit', 'route',
+               'manufacturer', 'defaultDirections', 'updatedAt'
+             ]);
 
         allow delete: if false;
       }
@@ -2563,6 +2648,45 @@ service cloud.firestore {
     // Strictly doctor-owned — only the owning doctor may read or write.
     // Document ID == doctorId == request.auth.uid.
     // ───────────────────────────────────────────────────────────────────────
+
+    // ───────────────────────────────────────────────────────────────────────
+    // medication_catalog/{medicationId}
+    //
+    // TrustyDr global medication vocabulary — Prescription Platform Phase 1
+    // (ADR-014). Cross-organization trusted medication identity. Medication
+    // names are standardized/registered values and are never translated, so
+    // there are no per-locale name fields to scope reads by.
+    //
+    // READ:  any signed-in user. Search is expected to go through the bounded
+    //        searchMedicationCatalog callable — an unfiltered client scan of
+    //        this collection is the broad-read pattern
+    //        .claude/rules/firestore-safety.md §6 forbids. A direct get() by
+    //        ID (resolving a catalogId already held by a center medication)
+    //        is legitimate and cheap.
+    // WRITE: never from a client. This single rule is what stops a free-text
+    //        typo from becoming trusted global medication data. Entries arrive
+    //        only via Cloud Functions / Admin SDK after admin review (Phase 6).
+    //        No automatic promotion exists anywhere in the system.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /medication_catalog/{medicationId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // medication_submissions/{submissionId}
+    //
+    // Inert moderation candidates written by onCenterMedicationWritten via the
+    // Admin SDK when a clinician creates a local medication. Nothing here is
+    // trusted vocabulary; nothing is ever promoted automatically. The Phase 6
+    // admin review UI is the only intended consumer.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /medication_submissions/{submissionId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
 
     match /clinical_doctor_prefs/{doctorId} {
       allow read, write: if isSignedIn()

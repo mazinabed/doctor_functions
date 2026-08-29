@@ -2483,3 +2483,27 @@ exports.markPharmacyOrderDeliveryFailed = markPharmacyOrderDeliveryFailed;
 // header for the full security rationale.
 const { receiveStandaloneFulfillmentSync } = require("./commerce/receiveStandaloneFulfillmentSync");
 exports.receiveStandaloneFulfillmentSync = receiveStandaloneFulfillmentSync;
+
+// ─── Medication Vocabulary — Prescription Platform Phase 1 (ADR-014) ───────
+// Foundation for the Medication Library. Two server-owned responsibilities:
+//
+//   onCenterMedicationWritten — the client creates the center medication
+//     document (authorization enforced by canAuthorMedications() in
+//     firestore.rules, which is the security boundary); this trigger derives
+//     normalizedKey + searchTokens server-side, per ADR-014's requirement that
+//     the dedup algorithm be changeable without a client release, and records
+//     an inert moderation candidate in medication_submissions. It promotes
+//     nothing — global promotion is admin-reviewed only and is Phase 6.
+//
+//   searchMedicationCatalog — bounded server-side search over the global
+//     medication_catalog. Exists because a client-side catalog read is the
+//     broad-read pattern .claude/rules/firestore-safety.md §6 forbids. The
+//     center library is NOT searched here; it is center-scoped and streamed
+//     client-side, same as clinical_custom_types.
+//
+// RxNorm is Phase 2 and is registered as an additional source behind the
+// client's MedicationSearchService — deliberately not called from here.
+const { onCenterMedicationWritten } = require("./medications/onCenterMedicationWritten");
+const { searchMedicationCatalog } = require("./medications/searchMedicationCatalog");
+exports.onCenterMedicationWritten = onCenterMedicationWritten;
+exports.searchMedicationCatalog = searchMedicationCatalog;
