@@ -84,7 +84,15 @@ describe('PRIVATE_COMMERCE_ENDPOINTS / PUBLIC_COMMERCE_ENDPOINTS classification'
     }
   });
 
-  test('contains exactly the 12 confirmed private bridge endpoints (2026-08-11 live IAM audit)', () => {
+  // Known, pre-existing gap deliberately NOT closed here: the 14 category
+  // and attribute CRUD endpoints that adminMarketplaceCategories.js and
+  // adminMarketplaceAttributes.js call are still absent from both sets
+  // (they predate this registry). They are not a live exposure — both
+  // relays route every call through callCommerce, which is asserted to use
+  // the shared OIDC helper by commerce_bridge_auth_coverage.test.js's
+  // ALL_PRIVATE_FILES check. Registering them is tracked separately so
+  // this list keeps meaning "audited and confirmed", not "assumed".
+  test('contains exactly the 15 confirmed private bridge endpoints (2026-08-11 live IAM audit; +3 category-rule endpoints 2026-08-29)', () => {
     const { PRIVATE_COMMERCE_ENDPOINTS } = require('../functions/commerce/lib/commerceAuth');
     const expected = [
       'placeMarketplaceOrderForHealthcare',
@@ -99,6 +107,9 @@ describe('PRIVATE_COMMERCE_ENDPOINTS / PUBLIC_COMMERCE_ENDPOINTS classification'
       'getMyProductReviewForHealthcare',
       'syncMarketplaceCategoriesToOdoo',
       'syncAttributeDefinitionsToOdoo',
+      'listCategoryAttributeRulesForHealthcare',
+      'setCategoryAttributeRuleForHealthcare',
+      'deleteCategoryAttributeRuleForHealthcare',
     ].sort();
     expect([...PRIVATE_COMMERCE_ENDPOINTS].sort()).toEqual(expected);
   });

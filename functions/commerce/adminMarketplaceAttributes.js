@@ -11,25 +11,22 @@
 // definitions (TrustyDr-global, not store-owned) — this file only relays;
 // all real logic (slug generation, enum validation, value-policy rules)
 // lives in Commerce's marketplaceAttributeEngine.ts.
+// Shared-helper adoption (2026-08-29) — this file previously carried a
+// private, byte-identical copy of the OIDC-minting logic (its own
+// GoogleAuth instance, its own per-audience client cache, its own
+// getAuthHeaders). Functionally equivalent, but it meant the hardened
+// helper could be changed without this relay following, and it kept this
+// file outside commerce_bridge_auth_coverage.test.js's ALL_PRIVATE_FILES
+// check — so nothing structurally enforced that these calls stayed
+// authenticated. Now uses the same lib/commerceAuth.js helper as
+// adminMarketplaceCategories.js and adminMarketplaceCategoryRules.js. No
+// behavioural change: same token, same audience, same header shape.
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { getFirestore } = require("firebase-admin/firestore");
-const { GoogleAuth } = require("google-auth-library");
 const fetch = require("node-fetch");
+const { getCommerceAuthHeaders } = require("./lib/commerceAuth");
 
 const COMMERCE_BASE_URL = "https://us-central1-trustydr-commerce.cloudfunctions.net";
-
-const googleAuth = new GoogleAuth();
-const idTokenClientsByUrl = new Map();
-
-async function getAuthHeaders(targetUrl) {
-  let client = idTokenClientsByUrl.get(targetUrl);
-  if (!client) {
-    client = await googleAuth.getIdTokenClient(targetUrl);
-    idTokenClientsByUrl.set(targetUrl, client);
-  }
-  const headers = await client.getRequestHeaders(targetUrl);
-  return { ...headers, "Content-Type": "application/json" };
-}
 
 async function requireAdmin(request) {
   if (!request.auth) {
@@ -45,7 +42,7 @@ async function callCommerce(endpoint, body) {
   const targetUrl = `${COMMERCE_BASE_URL}/${endpoint}`;
   let response;
   try {
-    const headers = await getAuthHeaders(targetUrl);
+    const headers = await getCommerceAuthHeaders(targetUrl);
     response = await fetch(targetUrl, {
       method: "POST",
       headers,

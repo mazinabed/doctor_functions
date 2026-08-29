@@ -97,7 +97,17 @@ describe('All-private bridge files: every Commerce call site is authenticated', 
   // Commerce is. callCommerce is these files' one and only wrapper, and it
   // internally calls getCommerceAuthHeaders (verified by
   // commerce_auth_helper.test.js) before every fetch.
-  const ALL_PRIVATE_FILES = ['pharmacyOrderActions.js', 'adminMarketplaceCategories.js'];
+  // adminMarketplaceCategoryRules.js added with the relay itself
+  // (2026-08-29). adminMarketplaceAttributes.js added at the same time —
+  // it had been live since 2026-07-18 while sitting outside this coverage
+  // list entirely, so nothing structurally enforced that its Commerce
+  // calls stayed authenticated.
+  const ALL_PRIVATE_FILES = [
+    'pharmacyOrderActions.js',
+    'adminMarketplaceCategories.js',
+    'adminMarketplaceAttributes.js',
+    'adminMarketplaceCategoryRules.js',
+  ];
 
   for (const fileName of ALL_PRIVATE_FILES) {
     test(`${fileName} has no plain, unauthenticated fetch() to the Commerce Bridge outside callCommerce`, () => {

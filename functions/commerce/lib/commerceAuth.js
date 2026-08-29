@@ -66,6 +66,14 @@ const PRIVATE_COMMERCE_ENDPOINTS = new Set([
   "getMyProductReviewForHealthcare",
   "syncMarketplaceCategoriesToOdoo",
   "syncAttributeDefinitionsToOdoo",
+  // Category <-> Attribute Rules (relay added 2026-08-29,
+  // adminMarketplaceCategoryRules.js). Privileged Firestore mutations on
+  // the admin-curated taxonomy, IAM-restricted on the Commerce side to
+  // this project's runtime service account — same posture as the category
+  // and attribute engines they sit alongside.
+  "listCategoryAttributeRulesForHealthcare",
+  "setCategoryAttributeRuleForHealthcare",
+  "deleteCategoryAttributeRuleForHealthcare",
 ]);
 
 // Public-by-design (no trusted identity, no privileged mutation) — listed

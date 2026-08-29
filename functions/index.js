@@ -2392,6 +2392,22 @@ exports.adminCreateAttributeValue = adminCreateAttributeValue;
 exports.adminUpdateAttributeValue = adminUpdateAttributeValue;
 exports.adminDeleteAttributeValue = adminDeleteAttributeValue;
 
+// ─── TrustyDr Commerce Bridge — Category <-> Attribute Rules (Milestone 4) ─
+// Admin-only CRUD (mydoctor_admin -> Healthcare -> Commerce) — see
+// adminMarketplaceCategoryRules.js's own header. The Commerce endpoints
+// have been deployed and IAM-restricted since 2026-07-18, but this relay
+// was never built, leaving the rules layer with no reachable admin path;
+// added 2026-08-29. Same admin gate and shared OIDC helper as
+// adminMarketplaceCategories.js above.
+const {
+  adminListCategoryAttributeRules,
+  adminSetCategoryAttributeRule,
+  adminDeleteCategoryAttributeRule,
+} = require("./commerce/adminMarketplaceCategoryRules");
+exports.adminListCategoryAttributeRules = adminListCategoryAttributeRules;
+exports.adminSetCategoryAttributeRule = adminSetCategoryAttributeRule;
+exports.adminDeleteCategoryAttributeRule = adminDeleteCategoryAttributeRule;
+
 // ─── TrustyDr Commerce Bridge — Milestone 6 (Cart, Checkout, Order Creation) ─
 // Patient-App-facing, Healthcare -> Commerce, write-capable and
 // patient-identity-bound — see marketplaceCheckout.js's own header for the
