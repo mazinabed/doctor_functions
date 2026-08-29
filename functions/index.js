@@ -2571,3 +2571,23 @@ exports.adminMergeMedicationSubmission = adminMergeMedicationSubmission;
 exports.adminRejectMedicationSubmission = adminRejectMedicationSubmission;
 exports.adminListMedicationCatalog = adminListMedicationCatalog;
 exports.adminUpdateMedicationCatalogEntry = adminUpdateMedicationCatalogEntry;
+
+// ─── Prescription Verification — Prescription Platform Phase 7 ─────────────
+// (ADR-013 §8). The QR on a printed prescription resolves here.
+//
+// verifyPrescription is deliberately PUBLIC and unauthenticated, for the same
+// reason getMarketplaceCatalog is: any pharmacy must be able to check a sheet,
+// including one that has never heard of TrustyDr, with no account and no app.
+// What makes that safe is not a login check but a field-level guarantee — the
+// only accepted input is an unguessable 192-bit token, and the only output is a
+// deliberately limited projection with no diagnosis and a masked patient.
+//
+// It is READ-ONLY. There is no anonymous "mark dispensed" in V1: changing a
+// prescription's authoritative status requires an authenticated pharmacy on the
+// Phase 5 clinical_requests rail, where the actor is known.
+const {
+  verifyPrescription,
+  ensurePrescriptionVerification,
+} = require("./prescriptions/verifyPrescription");
+exports.verifyPrescription = verifyPrescription;
+exports.ensurePrescriptionVerification = ensurePrescriptionVerification;

@@ -2777,7 +2777,8 @@ service cloud.firestore {
         && request.resource.data.status == 'draft'
         && request.resource.data.get('printCount', 0) == 0
         && request.resource.data.get('sentToPharmacyCount', 0) == 0
-        && !request.resource.data.keys().hasAny(['issuedAt', 'supersededBy']);
+        && !request.resource.data.keys()
+             .hasAny(['issuedAt', 'supersededBy', 'verificationToken']);
 
       // ── Path 1: editing a draft ──────────────────────────────────────────
       // Clinical content only, and only while still a draft.
@@ -2881,6 +2882,21 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /rxnorm_cache/{queryKey} {
+      allow read, write: if false;
+    }
+
+    // Prescription verification credentials — Phase 7 (ADR-013 §8).
+    //
+    // Maps an unguessable 192-bit token to a prescription id. Server-only in
+    // BOTH directions, exactly like rxnorm_cache above: no client reads it, so
+    // there is no query surface to enumerate, and no client writes it, so a
+    // token can only ever come from ensureVerificationToken. The public
+    // verifyPrescription callable resolves it with the Admin SDK.
+    //
+    // This is what keeps the printed short reference safe to display: the
+    // reference authorizes nothing, and the thing that does authorize is not
+    // reachable from any client.
+    match /prescription_verifications/{verificationToken} {
       allow read, write: if false;
     }
 

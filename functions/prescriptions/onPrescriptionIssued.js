@@ -39,6 +39,8 @@ const { onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getMessaging } = require('firebase-admin/messaging');
 
+const { ensureVerificationToken } = require('./verificationToken');
+
 const PROJECTION = 'patient_prescriptions';
 
 /**
@@ -174,6 +176,22 @@ exports.onPrescriptionIssued = onDocumentUpdated(
     const items = Array.isArray(next.items)
       ? next.items.map(projectItem).filter(Boolean)
       : [];
+
+    // ── 0. Verification credential — Phase 7 (ADR-013 §8) ───────────────────
+    // Minted here so EVERY issued prescription has one, not only the ones that
+    // happen to get printed. The print path mints on demand as well, because a
+    // doctor pressing Print two seconds after Issue cannot be made to wait on a
+    // trigger; ensureVerificationToken is transactional, so whichever arrives
+    // second reuses the first token rather than creating a second credential.
+    //
+    // Best-effort: a prescription that reaches the patient without a QR is far
+    // better than one that never reaches them at all, so a failure here must
+    // not stop the projection below.
+    try {
+      await ensureVerificationToken(db, prescriptionId);
+    } catch (e) {
+      console.error(`onPrescriptionIssued: token mint failed: ${e.message}`);
+    }
 
     // ── 1. Patient projection ───────────────────────────────────────────────
     const ref = db.collection(PROJECTION).doc(prescriptionId);
