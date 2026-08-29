@@ -2544,3 +2544,30 @@ exports.materializeRxNormMedication = materializeRxNormMedication;
 // cannot leak into the patient's view by default.
 const { onPrescriptionIssued } = require("./prescriptions/onPrescriptionIssued");
 exports.onPrescriptionIssued = onPrescriptionIssued;
+
+// ─── Medication Catalog Moderation — Prescription Platform Phase 6 ─────────
+// (ADR-014 §5). Admin review of clinician-contributed medications.
+//
+// NO AUTOMATIC PROMOTION EXISTS. distinctCenterCount — how many unrelated
+// centres independently produced the same normalizedKey — is surfaced as
+// review evidence and drives nothing. There is no threshold and no scheduled
+// job; medication_catalog is written only when an admin acts here, which is
+// what the collection's `write: if false` rule is protecting.
+//
+// Unlike adminCanonicalProducts.js there is no Commerce relay: the clinical
+// medication catalog lives in this project (ADR-014 §9 keeps it separate from
+// Commerce's canonical products), so these talk to Firestore directly.
+const {
+  adminListMedicationSubmissions,
+  adminApproveMedicationSubmission,
+  adminMergeMedicationSubmission,
+  adminRejectMedicationSubmission,
+  adminListMedicationCatalog,
+  adminUpdateMedicationCatalogEntry,
+} = require("./medications/adminMedicationCatalog");
+exports.adminListMedicationSubmissions = adminListMedicationSubmissions;
+exports.adminApproveMedicationSubmission = adminApproveMedicationSubmission;
+exports.adminMergeMedicationSubmission = adminMergeMedicationSubmission;
+exports.adminRejectMedicationSubmission = adminRejectMedicationSubmission;
+exports.adminListMedicationCatalog = adminListMedicationCatalog;
+exports.adminUpdateMedicationCatalogEntry = adminUpdateMedicationCatalogEntry;
