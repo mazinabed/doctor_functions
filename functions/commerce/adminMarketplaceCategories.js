@@ -109,6 +109,14 @@ exports.adminCreateMarketplaceCategory = onCall({ region: "us-central1" }, async
     featured: data.featured,
     isActive: data.isActive,
     storeTypes: data.storeTypes,
+    // Admin Taxonomy Phase 3 (2026-08-29) — Commerce has accepted and
+    // validated this since Phase 4B.1, but this relay dropped it, so no
+    // path in the system could ever set a category's regulatory
+    // classification and every category sat at the general_healthcare
+    // default. That left the B2B pharmaceutical gate inert in production.
+    // Passed straight through; the vocabulary is validated server-side by
+    // isValidCategoryRegulatoryScope, not here.
+    regulatoryScope: data.regulatoryScope,
   });
 });
 
@@ -132,6 +140,10 @@ exports.adminUpdateMarketplaceCategory = onCall({ region: "us-central1" }, async
     featured: data.featured,
     isActive: data.isActive,
     storeTypes: data.storeTypes,
+    // See the create relay above. Commerce only applies this when the key
+    // is present in the body, so an admin UI that omits it leaves the
+    // existing classification untouched rather than resetting it.
+    regulatoryScope: data.regulatoryScope,
   });
 });
 
