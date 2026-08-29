@@ -2507,3 +2507,26 @@ const { onCenterMedicationWritten } = require("./medications/onCenterMedicationW
 const { searchMedicationCatalog } = require("./medications/searchMedicationCatalog");
 exports.onCenterMedicationWritten = onCenterMedicationWritten;
 exports.searchMedicationCatalog = searchMedicationCatalog;
+
+// ─── Medication Vocabulary — Prescription Platform Phase 2 (ADR-014 §7) ────
+// RxNorm as a restricted, cached FALLBACK source. Registered behind the
+// client's existing MedicationSearchService — the picker is unchanged.
+//
+//   searchRxNormMedications — cached RxNorm search. Never a runtime
+//     requirement: every failure path returns { items: [], degraded: true } so
+//     the client reports a partial result and prescribing continues.
+//
+//   materializeRxNormMedication — writes a picked concept into
+//     medication_catalog once, keyed rxnorm_{rxcui} so repeated picks converge.
+//     The client sends only an rxcui (an NLM identifier); the name is re-read
+//     from RxNorm here, so no client can inject a name into the global catalog,
+//     and medication_catalog stays `write: if false` for every client.
+//
+// Source boundary (ADR-014): only NLM-created RxNorm content is persisted.
+// approximateTerm is used solely to discover rxcuis — a live probe shows its
+// candidates attributed to GS/MMSL/NDDF/ATC — and every name kept is re-read
+// from /rxcui/{id}/properties. allProperties is never called.
+const { searchRxNormMedications } = require("./medications/searchRxNormMedications");
+const { materializeRxNormMedication } = require("./medications/materializeRxNormMedication");
+exports.searchRxNormMedications = searchRxNormMedications;
+exports.materializeRxNormMedication = materializeRxNormMedication;

@@ -2683,6 +2683,20 @@ service cloud.firestore {
     // admin review UI is the only intended consumer.
     // ───────────────────────────────────────────────────────────────────────
 
+    // ───────────────────────────────────────────────────────────────────────
+    // rxnorm_cache/{queryKey}
+    //
+    // Prescription Platform Phase 2 (ADR-014 §7). Server-side query cache for
+    // searchRxNormMedications, written exclusively by that function via the
+    // Admin SDK. No client reads it: RxNorm results reach the client only
+    // through the callable, which applies the source boundary, ranking and the
+    // degraded-source contract. Exposing the raw cache would bypass all three.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /rxnorm_cache/{queryKey} {
+      allow read, write: if false;
+    }
+
     match /medication_submissions/{submissionId} {
       allow read: if isAdmin();
       allow write: if false;

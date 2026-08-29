@@ -73,6 +73,15 @@ async function seedMedicationFixtures(env) {
     await setDoc(doc(db, 'medication_submissions', 'center1__med_existing'), {
       centerId: 'center1', status: 'pending', normalizedKey: 'moxifloxacin|ophthalmic solution|0.5|%',
     });
+
+    // Phase 2 — RxNorm query cache and a materialised catalog entry.
+    await setDoc(doc(db, 'rxnorm_cache', 'moxifloxacin'), {
+      query: 'moxifloxacin', items: [], expiresAt: new Date(Date.now() + 3600_000),
+    });
+    await setDoc(doc(db, 'medication_catalog', 'rxnorm_403818'), {
+      displayName: 'moxifloxacin 5 MG/ML Ophthalmic Solution',
+      source: 'rxnorm', rxcui: '403818', status: 'active',
+    });
   });
 }
 
@@ -383,6 +392,57 @@ describe('medication_submissions — admin read, no client write', () => {
     const db = testEnv.authenticatedContext('uid_admin').firestore();
     await assertFails(
       setDoc(doc(db, 'medication_submissions', 'forged'), { status: 'approved' }),
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2 — RxNorm cache and materialised catalog entries
+// ─────────────────────────────────────────────────────────────────────────────
+describe('rxnorm_cache — server-only', () => {
+  test('no client may read the raw cache', async () => {
+    // Results reach clients only through searchRxNormMedications, which applies
+    // the source boundary, ranking and the degraded-source contract. Reading
+    // the cache directly would bypass all three.
+    for (const uid of ['uid_doc_member', 'uid_center_admin', 'uid_admin']) {
+      const db = testEnv.authenticatedContext(uid).firestore();
+      await assertFails(getDoc(doc(db, 'rxnorm_cache', 'moxifloxacin')));
+    }
+  });
+
+  test('no client may write the cache', async () => {
+    const db = testEnv.authenticatedContext('uid_admin').firestore();
+    await assertFails(
+      setDoc(doc(db, 'rxnorm_cache', 'forged'), { query: 'x', items: [] }),
+    );
+  });
+});
+
+describe('materialised RxNorm catalog entries', () => {
+  test('a signed-in clinician CAN read one by id', async () => {
+    // This is the point of materialisation: once picked, the medication is
+    // served from Firestore rather than RxNav.
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertSucceeds(getDoc(doc(db, 'medication_catalog', 'rxnorm_403818')));
+  });
+
+  test('a client still CANNOT write one directly', async () => {
+    // materializeRxNormMedication re-reads the name from RxNorm server-side, so
+    // no client can inject a medication name into the global catalog.
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertFails(
+      setDoc(doc(db, 'medication_catalog', 'rxnorm_999999'), {
+        displayName: 'Forged Drug 5mg', source: 'rxnorm', rxcui: '999999',
+      }),
+    );
+  });
+
+  test('a client CANNOT tamper with an existing materialised entry', async () => {
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertFails(
+      updateDoc(doc(db, 'medication_catalog', 'rxnorm_403818'), {
+        displayName: 'Tampered',
+      }),
     );
   });
 });
