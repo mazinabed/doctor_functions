@@ -203,10 +203,30 @@ exports.onPrescriptionIssued = onDocumentUpdated(
         centerId: next.centerId || '',
 
         // Prescriber + centre, so the patient can see who issued it.
+        //
+        // Phase 8 (ADR-013 §9) widens this deliberately. The Patient App can
+        // now produce the same authoritative printable document the doctor
+        // prints, and a prescription sheet without the practice address, a
+        // contact number, or the prescriber's licence is not a document a
+        // pharmacy outside the network can act on. Every field here is already
+        // printed on the paper the patient could be handed in the clinic, so
+        // nothing crosses that the patient could not already read.
+        //
+        // What still does NOT cross: `diagnosisNote`, which stays
+        // doctor-visible only, and the verification token, which the Patient
+        // App mints on demand rather than holding at rest.
         doctorId: next.doctorId || '',
         doctorName: next.doctorName || '',
         doctorSpecialty: next.doctorSpecialty || null,
+        doctorLicenseNumber: next.doctorLicenseNumber || null,
         centerName: next.centerName || null,
+        centerAddress: next.centerAddress || null,
+        centerPhone: next.centerPhone || null,
+
+        // The patient's own identity, so their printed copy names who it is
+        // for. This is their own document; nothing here is new to them.
+        patientName: next.patientName || '',
+        patientPhone: next.patientPhone || null,
 
         items,
         // General advice prints and displays; diagnosisNote deliberately does

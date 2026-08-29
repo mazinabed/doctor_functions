@@ -180,9 +180,24 @@ exports.ensurePrescriptionVerification = onCall(
     // credential for a sheet you may already print grants nothing new; adding a
     // stricter test here would instead mean a receptionist could print a sheet
     // whose QR does not resolve.
+    // The patient the prescription was written for — Phase 8 (ADR-013 §9).
+    //
+    // The Patient App needs the QR to produce the same authoritative printable
+    // document the doctor prints, so a patient can present it at a pharmacy
+    // outside the network. Minting on demand for the authenticated owner is
+    // deliberately preferred over projecting the token into
+    // `patient_prescriptions`: that would put the credential at rest in a
+    // second collection, and a credential that exists in one place is a
+    // credential with one place to leak from.
+    //
+    // This grants the patient nothing new either way. They can already read
+    // their own prescription in full; the token only unlocks a *narrower*,
+    // masked projection of the same document.
+    const isPatient = data.patientId === uid;
+
     const isAuthor = data.doctorId === uid;
     let isMember = false;
-    if (!isAuthor && data.centerId) {
+    if (!isAuthor && !isPatient && data.centerId) {
       try {
         const member = await db.collection('medical_centers')
           .doc(data.centerId).collection('members').doc(uid).get();
@@ -191,7 +206,7 @@ exports.ensurePrescriptionVerification = onCall(
         console.error(`ensurePrescriptionVerification: ${e.message}`);
       }
     }
-    if (!isAuthor && !isMember) {
+    if (!isAuthor && !isPatient && !isMember) {
       throw new HttpsError('permission-denied', 'Not your prescription.');
     }
 
