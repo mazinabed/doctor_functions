@@ -711,6 +711,16 @@
         { "fieldPath": "issuedAt", "order": "DESCENDING" }
       ]
     }
+,
+    {
+      "collectionGroup": "prescription_sets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isActive", "order": "ASCENDING" },
+        { "fieldPath": "sortOrder", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
+      ]
+    }
   ],
   "fieldOverrides": []
 }

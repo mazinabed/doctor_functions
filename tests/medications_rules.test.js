@@ -74,6 +74,17 @@ async function seedMedicationFixtures(env) {
       centerId: 'center1', status: 'pending', normalizedKey: 'moxifloxacin|ophthalmic solution|0.5|%',
     });
 
+    // Phase 4 — a centre prescription set created by uid_doc_member.
+    await setDoc(doc(db, 'medical_centers/center1/prescription_sets', 'set_1'), {
+      centerId: 'center1',
+      name: 'Post-op cataract',
+      items: [{ id: 'i1', displayName: 'Moxifloxacin 0.5% Ophthalmic Solution' }],
+      isActive: true,
+      sortOrder: 0,
+      createdBy: 'uid_doc_member',
+      createdAt: new Date('2026-08-01T00:00:00Z'),
+    });
+
     // Phase 2 — RxNorm query cache and a materialised catalog entry.
     await setDoc(doc(db, 'rxnorm_cache', 'moxifloxacin'), {
       query: 'moxifloxacin', items: [], expiresAt: new Date(Date.now() + 3600_000),
@@ -444,5 +455,155 @@ describe('materialised RxNorm catalog entries', () => {
         displayName: 'Tampered',
       }),
     );
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Phase 4 — prescription sets
+//
+// A set is a reusable group of prescription lines. It uses the same authoring
+// seam as medications, with one deliberate difference: its CREATOR may archive
+// it, because a set is a convenience shortcut whose removal affects nobody
+// else's data, whereas a medication is shared vocabulary other libraries
+// reference.
+// -----------------------------------------------------------------------------
+const SETS = 'medical_centers/center1/prescription_sets';
+
+const validSet = (createdBy) => ({
+  centerId: 'center1',
+  name: 'H. pylori regimen',
+  items: [
+    { id: 'a', displayName: 'Amoxicillin 500mg Capsule' },
+    { id: 'b', displayName: 'Clarithromycin 500mg Tablet' },
+  ],
+  isActive: true,
+  sortOrder: 0,
+  createdBy,
+  createdAt: new Date(),
+});
+
+describe('prescription sets — create', () => {
+  test('a doctor at the centre CAN create a set', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertSucceeds(setDoc(doc(db, SETS, 's_new'), validSet('uid_doc_member')));
+  });
+
+  test('a centre admin CAN create a set', async () => {
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertSucceeds(setDoc(doc(db, SETS, 's_admin'), validSet('uid_center_admin')));
+  });
+
+  test('a nurse CANNOT create a set', async () => {
+    // Same authoring seam as medications — a clinical UI permission is not
+    // prescribing authority.
+    const db = testEnv.authenticatedContext('uid_nurse').firestore();
+    await assertFails(setDoc(doc(db, SETS, 's_nurse'), validSet('uid_nurse')));
+  });
+
+  test('a patient CANNOT create a set', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(setDoc(doc(db, SETS, 's_p'), validSet('uid_patient1')));
+  });
+
+  test('CANNOT create on behalf of another user', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertFails(setDoc(doc(db, SETS, 's_x'), validSet('uid_center_admin')));
+  });
+
+  test('CANNOT create an empty set', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertFails(
+      setDoc(doc(db, SETS, 's_empty'), { ...validSet('uid_doc_member'), items: [] }),
+    );
+  });
+
+  test('CANNOT create an unnamed set', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertFails(
+      setDoc(doc(db, SETS, 's_noname'), { ...validSet('uid_doc_member'), name: '' }),
+    );
+  });
+
+  test('CANNOT create a set beyond the line cap', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    const tooMany = Array.from({ length: 21 }, (_, i) => ({
+      id: `i${i}`, displayName: `Drug ${i} 1 MG Tablet`,
+    }));
+    await assertFails(
+      setDoc(doc(db, SETS, 's_big'), { ...validSet('uid_doc_member'), items: tooMany }),
+    );
+  });
+
+  test('CANNOT create archived', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertFails(
+      setDoc(doc(db, SETS, 's_arch'), { ...validSet('uid_doc_member'), isActive: false }),
+    );
+  });
+});
+
+describe('prescription sets — read', () => {
+  test('any centre member CAN read, including reception', async () => {
+    for (const uid of ['uid_doc_member', 'uid_nurse', 'uid_doctor2', 'uid_center_admin']) {
+      const db = testEnv.authenticatedContext(uid).firestore();
+      await assertSucceeds(getDoc(doc(db, SETS, 'set_1')));
+    }
+  });
+
+  test('a non-member CANNOT read', async () => {
+    const db = testEnv.authenticatedContext('uid_patient1').firestore();
+    await assertFails(getDoc(doc(db, SETS, 'set_1')));
+  });
+});
+
+describe('prescription sets — update and archive', () => {
+  test('the creator CAN edit their own set', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertSucceeds(
+      updateDoc(doc(db, SETS, 'set_1'), { name: 'Post-op cataract v2' }),
+    );
+  });
+
+  test('the creator CAN archive their own set', async () => {
+    // Deliberately unlike medications, where archive is admin-only: a set is a
+    // shortcut, and leaving its author unable to remove it would be a dead end.
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertSucceeds(updateDoc(doc(db, SETS, 'set_1'), { isActive: false }));
+  });
+
+  test('a centre admin CAN archive any set', async () => {
+    const db = testEnv.authenticatedContext('uid_center_admin').firestore();
+    await assertSucceeds(updateDoc(doc(db, SETS, 'set_1'), { isActive: false }));
+  });
+
+  test('another doctor CANNOT edit a set they did not create', async () => {
+    const db = testEnv.authenticatedContext('uid_doctor2').firestore();
+    await assertFails(updateDoc(doc(db, SETS, 'set_1'), { name: 'Hijacked' }));
+  });
+
+  test('a nurse CANNOT edit a set', async () => {
+    const db = testEnv.authenticatedContext('uid_nurse').firestore();
+    await assertFails(updateDoc(doc(db, SETS, 'set_1'), { name: 'Nope' }));
+  });
+
+  test('CANNOT re-own or re-scope a set', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    await assertFails(updateDoc(doc(db, SETS, 'set_1'), { createdBy: 'uid_nurse' }));
+    await assertFails(updateDoc(doc(db, SETS, 'set_1'), { centerId: 'expired_center' }));
+  });
+
+  test('CANNOT grow a set past the line cap', async () => {
+    const db = testEnv.authenticatedContext('uid_doc_member').firestore();
+    const tooMany = Array.from({ length: 21 }, (_, i) => ({
+      id: `i${i}`, displayName: `Drug ${i} 1 MG Tablet`,
+    }));
+    await assertFails(updateDoc(doc(db, SETS, 'set_1'), { items: tooMany }));
+  });
+
+  test('nobody may delete — archive only', async () => {
+    for (const uid of ['uid_doc_member', 'uid_center_admin', 'uid_admin']) {
+      const db = testEnv.authenticatedContext(uid).firestore();
+      await assertFails(deleteDoc(doc(db, SETS, 'set_1')));
+    }
   });
 });
