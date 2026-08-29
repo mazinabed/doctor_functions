@@ -289,6 +289,38 @@ exports.onClinicalReferralCreated = onDocumentCreated(
       instructions: data.instructions || '',
       urgency:      data.urgency      || '',
 
+      // Prescription Platform Phase 5 (ADR-013 §3) — structured medication
+      // lines, present only when the doctor transmitted a structured
+      // prescription. Absent on every legacy free-text prescription and on
+      // every lab/imaging referral, so this is purely additive: the patient app
+      // defaults to an empty list and legacy documents render exactly as
+      // before.
+      //
+      // Field-by-field rather than a spread, matching onPrescriptionIssued's
+      // own projectItem: a clinical field added to the transmission later must
+      // not leak into the patient's view by default.
+      //
+      // The medication NAME is copied verbatim — it is a standardized identity
+      // and is never translated (ADR-014). `directionsText` was rendered by the
+      // sender in the language chosen for the pharmacy; the patient app also
+      // holds the structured codes on its own patient_prescriptions projection,
+      // so this string is a convenience, not the patient's only source.
+      prescriptionId: data.prescriptionId || null,
+      medications: Array.isArray(data.prescribedItems)
+        ? data.prescribedItems
+            .filter((m) => m && typeof m === 'object' && m.displayName)
+            .map((m) => ({
+              id:             m.id || '',
+              displayName:    m.displayName,
+              strength:       m.strength || null,
+              strengthUnit:   m.strengthUnit || null,
+              dosageForm:     m.dosageForm || null,
+              quantity:       m.quantity ?? null,
+              quantityUnitCode: m.quantityUnitCode || null,
+              directionsText: m.directionsText || null,
+            }))
+        : [],
+
       // Live status — mirrored by onClinicalReferralStatusUpdated on change
       partnerStatus:        data.partnerStatus        || 'sent',
       status:               data.status               || 'pending',
