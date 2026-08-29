@@ -2669,6 +2669,139 @@ service cloud.firestore {
     //        No automatic promotion exists anywhere in the system.
     // ───────────────────────────────────────────────────────────────────────
 
+    // ───────────────────────────────────────────────────────────────────────
+    // prescriptions/{prescriptionId}
+    //
+    // Prescription Platform Phase 3 (ADR-013). The Healthcare-owned clinical
+    // record. clinical_requests remains the pharmacy transmission rail; a
+    // prescription may be issued with no pharmacy at all.
+    //
+    // LIFECYCLE: draft -> issued -> (cancelled | superseded). One way.
+    //   An issued prescription is an IMMUTABLE RECEIPT. Corrections are a new
+    //   prescription that supersedes the old one, never an edit — the same
+    //   discipline the appointment model already enforces.
+    //
+    // READ:   the authoring doctor, and center members of the prescription's
+    //         center. Patients read the projection, never this collection.
+    // CREATE: the authoring doctor only, as a draft, at a center they belong
+    //         to. Mirrors the clinical_requests create rule exactly.
+    // UPDATE: three disjoint paths — draft edit, issue, and post-issue
+    //         distribution/lifecycle. Each is separately constrained so no
+    //         path can reach another path's fields.
+    // DELETE: a draft may be discarded by its author. An issued prescription
+    //         can never be deleted — cancel it instead.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /prescriptions/{prescriptionId} {
+      function isAuthoringDoctor() {
+        return isSignedIn() && resource.data.doctorId == request.auth.uid;
+      }
+
+      // Snapshot identity + encounter fields. Frozen from creation: an edit
+      // that changed the patient or the prescriber would rewrite history.
+      function touchesImmutableIdentity() {
+        return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'appointmentId', 'centerId', 'patientId', 'patientName',
+          'doctorId', 'doctorName', 'doctorSpecialty', 'doctorLicenseNumber',
+          'centerName', 'centerAddress', 'centerPhone',
+          'createdAt', 'createdByUid', 'createdByRole', 'dateKey'
+        ]);
+      }
+
+      allow read: if isSignedIn()
+        && resource.data.doctorId == request.auth.uid;
+
+      allow read: if isSignedIn()
+        && isCenterMember(resource.data.centerId);
+
+      allow read: if isAdmin();
+
+      allow create: if isSignedIn()
+        && request.resource.data.doctorId == request.auth.uid
+        && isCenterMember(request.resource.data.centerId)
+        && request.resource.data.createdByUid == request.auth.uid
+        && request.resource.data.status == 'draft'
+        && request.resource.data.get('printCount', 0) == 0
+        && request.resource.data.get('sentToPharmacyCount', 0) == 0
+        && !request.resource.data.keys().hasAny(['issuedAt', 'supersededBy']);
+
+      // ── Path 1: editing a draft ──────────────────────────────────────────
+      // Clinical content only, and only while still a draft.
+      allow update: if isAuthoringDoctor()
+        && resource.data.status == 'draft'
+        && request.resource.data.status == 'draft'
+        && !touchesImmutableIdentity()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'items', 'diagnosisNote', 'patientInstructions', 'updatedAt'
+           ]);
+
+      // ── Path 2: issuing ──────────────────────────────────────────────────
+      // The one-way transition. Clinical content may be written in the same
+      // update (the composer saves and issues together), but identity may not
+      // move and the distribution counters must still be at zero.
+      allow update: if isAuthoringDoctor()
+        && canReleaseClinicalResults(resource.data.centerId)
+        && resource.data.status == 'draft'
+        && request.resource.data.status == 'issued'
+        && !touchesImmutableIdentity()
+        && request.resource.data.get('printCount', 0) == 0
+        && request.resource.data.get('sentToPharmacyCount', 0) == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'status', 'issuedAt', 'items', 'diagnosisNote',
+             'patientInstructions', 'supersedes', 'updatedAt'
+           ]);
+
+      // ── Path 3: after issue — distribution facts and terminal states ─────
+      // This is the ceiling that makes an issued prescription immutable:
+      // clinical fields are simply not in the list, so no client can reach
+      // them once status is 'issued'.
+      allow update: if isAuthoringDoctor()
+        && resource.data.status == 'issued'
+        && !touchesImmutableIdentity()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+             'printCount', 'printedAt',
+             'sentToPharmacyCount', 'lastSentAt',
+             'status', 'cancelledAt', 'cancelReason', 'supersededBy',
+             'updatedAt'
+           ])
+        && request.resource.data.status in ['issued', 'cancelled', 'superseded'];
+
+      // A center member who is not the author may still record that they
+      // printed a copy — reception legitimately reprints for a patient.
+      // Strictly the two print fields; nothing else is reachable.
+      allow update: if isSignedIn()
+        && isCenterMember(resource.data.centerId)
+        && resource.data.status == 'issued'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['printCount', 'printedAt', 'updatedAt']);
+
+      // Drafts are discardable by their author; an issued prescription is a
+      // receipt and is never deleted.
+      allow delete: if isAuthoringDoctor()
+        && resource.data.status == 'draft';
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // patient_prescriptions/{prescriptionId}
+    //
+    // Patient-facing projection, written exclusively by onPrescriptionIssued
+    // (Admin SDK). Mirrors patient_referral_requests' contract exactly: the
+    // patient reads their own, and no client writes at all.
+    //
+    // This projection is what makes a PRINT-ONLY prescription reach the patient
+    // app — before Phase 3, a prescription with no pharmacy produced no patient
+    // record whatsoever. It deliberately omits diagnosisNote.
+    // ───────────────────────────────────────────────────────────────────────
+
+    match /patient_prescriptions/{prescriptionId} {
+      allow read: if isSignedIn()
+        && resource.data.patientId == request.auth.uid;
+
+      allow read: if isAdmin();
+
+      allow write: if false;
+    }
+
     match /medication_catalog/{medicationId} {
       allow read: if isSignedIn();
       allow write: if false;

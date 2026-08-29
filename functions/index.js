@@ -2530,3 +2530,17 @@ const { searchRxNormMedications } = require("./medications/searchRxNormMedicatio
 const { materializeRxNormMedication } = require("./medications/materializeRxNormMedication");
 exports.searchRxNormMedications = searchRxNormMedications;
 exports.materializeRxNormMedication = materializeRxNormMedication;
+
+// ─── Prescriptions — Prescription Platform Phase 3 (ADR-013) ───────────────
+// Fires on the draft -> issued edge only. Writes the patient-facing projection
+// and notifies the patient.
+//
+// The projection is what makes a PRINT-ONLY prescription reach the patient at
+// all: before Phase 3 the only patient-visible artifact was the pharmacy
+// referral, so a prescription with no pharmacy produced no patient record.
+//
+// diagnosisNote is doctor-visible only and is deliberately not projected. Items
+// are copied field-by-field rather than spread, so a clinical field added later
+// cannot leak into the patient's view by default.
+const { onPrescriptionIssued } = require("./prescriptions/onPrescriptionIssued");
+exports.onPrescriptionIssued = onPrescriptionIssued;
