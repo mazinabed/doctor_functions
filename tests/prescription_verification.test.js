@@ -255,6 +255,45 @@ describe('public projection', () => {
       .toBe('Moxifloxacin 0.5% Ophthalmic Solution');
   });
 
+  test('carries the full professional practice identity', () => {
+    // The pharmacist compares the paper against this page, so the practice
+    // block has to be complete enough to actually compare: name, location and
+    // a number they can ring.
+    const p = project();
+    expect(p.centerName).toBe('Al Noor Eye Centre');
+    expect(p.centerAddress).toBe('Karrada, Baghdad');
+    expect(p.centerPhone).toBe('+9647800000000');
+  });
+
+  test('carries the prescriber credential a pharmacist checks', () => {
+    const p = project();
+    expect(p.doctorName).toBe('Zainab Karim');
+    expect(p.doctorSpecialty).toBe('Ophthalmology');
+    expect(p.doctorLicenseNumber).toBe('LIC-4471');
+  });
+
+  test('omits professional fields the centre never recorded', () => {
+    // Absent means absent. No placeholder, no empty string that would render as
+    // a dangling label on the page.
+    const p = buildVerificationProjection({
+      prescriptionId: 'abc123XYZ4F2A9C',
+      prescription: {
+        status: 'issued',
+        doctorName: 'Zainab Karim',
+        patientName: 'Ahmed Hassan',
+        items: [],
+      },
+      nowMs: NOW,
+    });
+    expect(p.centerAddress).toBeNull();
+    expect(p.centerPhone).toBeNull();
+    expect(p.doctorLicenseNumber).toBeNull();
+    expect(p.doctorSpecialty).toBeNull();
+    // And the fields that DO exist still come through.
+    expect(p.doctorName).toBe('Zainab Karim');
+    expect(p.referenceNumber).toBe('4F2A9C');
+  });
+
   test('NEVER carries the diagnosis', () => {
     expect(JSON.stringify(project()))
       .not.toContain('SECRET-DIAGNOSIS-MARKER');
