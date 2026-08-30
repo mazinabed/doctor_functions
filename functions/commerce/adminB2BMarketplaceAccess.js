@@ -111,6 +111,38 @@ async function callCommerce(endpoint, body) {
 // all" gate; regulated-category selling still separately requires
 // sellerRegulatoryScopes via the existing seller regulatory application
 // flow (adminB2BRegulatory.js), unaffected by this grant.
+// Platform-controlled ERP capability grant (Phase 5 security correction,
+// 2026-08-29). organizations/{orgId}.erpCapabilities.interactiveOdooAccess
+// decides whether an org gets a REAL, usable interactive Odoo login (as
+// opposed to the shared technical account every backend Commerce operation
+// already uses). Commerce's own updateErpCapabilities used to be an
+// owner-callable gated by requireOrgOwner, which let an ordinary pharmacy
+// owner self-grant it and then provision themselves Odoo credentials —
+// the same weakness class already fixed for marketplaceChannels and
+// sponsoredChannels. This relay is now the only way in, and it verifies a
+// real platform admin first, exactly like every other export in this file.
+//
+// Matters because the Odoo security-group lockdown is still open: a
+// pharmacy owner with an interactive Odoo session inherits Sales/Inventory
+// Administrator and can write the GLOBAL, TrustyDr-owned product.attribute
+// taxonomy. Keeping interactiveOdooAccess platform-controlled is what
+// currently holds that risk latent.
+exports.adminUpdateErpCapabilities = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  const { orgId, interactiveOdooAccess } = request.data || {};
+  if (!orgId || typeof orgId !== "string" || typeof interactiveOdooAccess !== "boolean") {
+    throw new HttpsError(
+      "invalid-argument",
+      "orgId and a boolean interactiveOdooAccess are required.",
+    );
+  }
+  return callCommerce("updateErpCapabilitiesForHealthcare", {
+    actorUid: request.auth.uid,
+    orgId,
+    interactiveOdooAccess,
+  });
+});
+
 exports.adminUpdateMarketplaceChannels = onCall({ region: "us-central1" }, async (request) => {
   await requireAdmin(request);
   const { orgId, marketplaceChannels } = request.data || {};

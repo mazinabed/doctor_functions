@@ -74,6 +74,10 @@ const PRIVATE_COMMERCE_ENDPOINTS = new Set([
   "listCategoryAttributeRulesForHealthcare",
   "setCategoryAttributeRuleForHealthcare",
   "deleteCategoryAttributeRuleForHealthcare",
+  // Platform-controlled ERP capability grant (2026-08-29) — privileged
+  // Firestore mutation deciding whether an org gets a real interactive
+  // Odoo login; IAM-restricted on the Commerce side.
+  "updateErpCapabilitiesForHealthcare",
 ]);
 
 // Public-by-design (no trusted identity, no privileged mutation) — listed

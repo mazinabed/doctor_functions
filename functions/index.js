@@ -2365,9 +2365,11 @@ exports.adminRejectSellerRegulatoryApplication = adminRejectSellerRegulatoryAppl
 // never a second search endpoint.
 const {
   adminUpdateMarketplaceChannels,
+  adminUpdateErpCapabilities,
   adminGrantBuyerScopes,
 } = require("./commerce/adminB2BMarketplaceAccess");
 exports.adminUpdateMarketplaceChannels = adminUpdateMarketplaceChannels;
+exports.adminUpdateErpCapabilities = adminUpdateErpCapabilities;
 exports.adminGrantBuyerScopes = adminGrantBuyerScopes;
 
 // ─── TrustyDr Commerce Bridge — Global Attribute Engine (Milestone 3) ──────

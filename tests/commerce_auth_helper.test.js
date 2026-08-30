@@ -92,7 +92,7 @@ describe('PRIVATE_COMMERCE_ENDPOINTS / PUBLIC_COMMERCE_ENDPOINTS classification'
   // the shared OIDC helper by commerce_bridge_auth_coverage.test.js's
   // ALL_PRIVATE_FILES check. Registering them is tracked separately so
   // this list keeps meaning "audited and confirmed", not "assumed".
-  test('contains exactly the 15 confirmed private bridge endpoints (2026-08-11 live IAM audit; +3 category-rule endpoints 2026-08-29)', () => {
+  test('contains exactly the 16 confirmed private bridge endpoints (2026-08-11 live IAM audit; +3 category-rule endpoints and +1 ERP-capability endpoint 2026-08-29)', () => {
     const { PRIVATE_COMMERCE_ENDPOINTS } = require('../functions/commerce/lib/commerceAuth');
     const expected = [
       'placeMarketplaceOrderForHealthcare',
@@ -110,6 +110,7 @@ describe('PRIVATE_COMMERCE_ENDPOINTS / PUBLIC_COMMERCE_ENDPOINTS classification'
       'listCategoryAttributeRulesForHealthcare',
       'setCategoryAttributeRuleForHealthcare',
       'deleteCategoryAttributeRuleForHealthcare',
+      'updateErpCapabilitiesForHealthcare',
     ].sort();
     expect([...PRIVATE_COMMERCE_ENDPOINTS].sort()).toEqual(expected);
   });
