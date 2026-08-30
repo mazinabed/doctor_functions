@@ -75,6 +75,78 @@ function deriveTargetStatus(data, now) {
 }
 
 /**
+ * Provider-side expiry sync for `pharmacy_providers` and
+ * `diagnostic_providers`.
+ *
+ * Same date rules as deriveTargetStatus, one hard difference: it returns ONLY
+ * `subscriptionStatus`, never an account status field.
+ *
+ * A provider document carries TWO independent statuses:
+ *
+ *   subscriptionStatus  trial | active | grace | expired | pending_activation
+ *   status              pending | active | suspended | rejected
+ *
+ * `status` is the administrative decision an admin made about the account, and
+ * a lapsed invoice must never overwrite it. That is why deriveTargetStatus is
+ * not reused directly here — it returns `centerStatus`, which on a provider
+ * document is that very field.
+ *
+ * CONSTRAINTS (hard):
+ *   - Returns only 'grace' or 'expired' — never 'active' or 'trial'. This job
+ *     can expire a subscription; only a real payment approval can grant one.
+ *   - Returns null when any operational window is still valid.
+ *   - Returns null when no date fields are present (fail-closed).
+ *   - Returns null for pending_activation: the provider has paid and is
+ *     waiting on an admin, and overwriting it with 'expired' would replace
+ *     "Pending approval" with "Subscription ended" in the portal and lose the
+ *     fact that they acted.
+ *   - Returns null for suspended/rejected accounts: they are outside the
+ *     normal billing flow, and this job has no business writing to them.
+ *   - Idempotent: re-running against an already-synced provider returns null.
+ *
+ * @param {Object} data Provider document data
+ * @param {Date}   now  Injected current time
+ * @returns {{ subscriptionStatus: string } | null}
+ */
+function deriveProviderSubscriptionStatus(data, now) {
+  const accountStatus = data.status;
+  if (accountStatus === 'suspended' || accountStatus === 'rejected') {
+    return null;
+  }
+
+  // A submitted payment awaiting approval is a state the admin still has to
+  // act on. It is not this job's to clear.
+  if (data.subscriptionStatus === 'pending_activation') {
+    return null;
+  }
+
+  const trialEnds       = toDate(data.trialEnds);
+  const subscriptionEnd = toDate(data.subscriptionEnd);
+  const gracePeriodEnds = toDate(data.gracePeriodEnds);
+
+  // Fail-closed: nothing to reason from → no write.
+  if (!trialEnds && !subscriptionEnd && !gracePeriodEnds) {
+    return null;
+  }
+
+  const inTrial        = trialEnds       !== null && now < trialEnds;
+  const inSubscription = subscriptionEnd !== null && now < subscriptionEnd;
+  const inGrace        = gracePeriodEnds !== null && now < gracePeriodEnds;
+
+  if (inTrial || inSubscription) {
+    return null;
+  }
+
+  if (inGrace) {
+    if (data.subscriptionStatus === 'grace') return null;
+    return { subscriptionStatus: 'grace' };
+  }
+
+  if (data.subscriptionStatus === 'expired') return null;
+  return { subscriptionStatus: 'expired' };
+}
+
+/**
  * Phase 1B (Commerce Billing) — Commerce's own, fully independent derivation,
  * over commerce*-namespaced fields on the SAME medical_centers document.
  *
@@ -170,6 +242,7 @@ function deriveCommerceReminderStage(data, now) {
 }
 
 module.exports = {
+  deriveProviderSubscriptionStatus,
   deriveTargetStatus,
   deriveCommerceTargetStatus,
   deriveCommerceReminderStage,

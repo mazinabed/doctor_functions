@@ -34,6 +34,8 @@ async function clearCollection(collectionPath) {
 
 beforeEach(async () => {
   await clearCollection('medical_centers');
+  await clearCollection('pharmacy_providers');
+  await clearCollection('diagnostic_providers');
 });
 
 afterAll(async () => {
@@ -151,4 +153,149 @@ test('IB-5 reminder stage fires exactly once: writes a notification doc and comm
   await expireCenters.run({});
   const afterSecond = (await db.collection('medical_centers').doc('center_ib5').get()).data();
   expect(afterSecond.commerceLastReminderStage).toBe('7d');
+});
+
+/**
+ * Provider expiry passes — the actual batch wiring for pharmacy_providers and
+ * diagnostic_providers, not just the pure derivation.
+ *
+ * These exist because the failure they cover was entirely a wiring failure: the
+ * derivation for a lapsed subscription was always correct, the job simply never
+ * looked at these two collections.
+ */
+
+test('IB-6 an expired diagnostic provider is expired, and its account status survives', async () => {
+  await db.collection('diagnostic_providers').doc('lab_ib6').set({
+    ownerId: 'uid_owner_ib6',
+    status: 'active',
+    subscriptionStatus: 'active',
+    subscriptionStart: addDays(-70),
+    subscriptionEnd: addDays(-40),
+  });
+
+  await expireCenters.run({});
+
+  const after = (await db.collection('diagnostic_providers').doc('lab_ib6').get()).data();
+  expect(after.subscriptionStatus).toBe('expired');
+  expect(after.statusSyncedAt).toBeTruthy();
+  // The administrative account status is a separate decision — untouched.
+  expect(after.status).toBe('active');
+  expect(after.centerStatus).toBeUndefined();
+});
+
+test('IB-7 an expired pharmacy provider is expired the same way', async () => {
+  await db.collection('pharmacy_providers').doc('pharm_ib7').set({
+    ownerId: 'uid_owner_ib7',
+    status: 'active',
+    subscriptionStatus: 'active',
+    subscriptionEnd: addDays(-5),
+  });
+
+  await expireCenters.run({});
+
+  const after = (await db.collection('pharmacy_providers').doc('pharm_ib7').get()).data();
+  expect(after.subscriptionStatus).toBe('expired');
+  expect(after.status).toBe('active');
+});
+
+test('IB-8 a provider with a future subscriptionEnd, or a valid grace window, is untouched', async () => {
+  await db.collection('pharmacy_providers').doc('pharm_ib8_future').set({
+    status: 'active',
+    subscriptionStatus: 'active',
+    subscriptionEnd: addDays(120),
+  });
+  await db.collection('diagnostic_providers').doc('lab_ib8_grace').set({
+    status: 'active',
+    subscriptionStatus: 'grace',
+    subscriptionEnd: addDays(-10),
+    gracePeriodEnds: addDays(4),
+  });
+
+  await expireCenters.run({});
+
+  const future = (await db.collection('pharmacy_providers').doc('pharm_ib8_future').get()).data();
+  expect(future.subscriptionStatus).toBe('active');
+  expect(future.statusSyncedAt).toBeUndefined();
+
+  const grace = (await db.collection('diagnostic_providers').doc('lab_ib8_grace').get()).data();
+  expect(grace.subscriptionStatus).toBe('grace');
+  expect(grace.statusSyncedAt).toBeUndefined();
+});
+
+test('IB-9 pending_activation and suspended/rejected accounts are never rewritten', async () => {
+  await db.collection('diagnostic_providers').doc('lab_ib9_pending').set({
+    status: 'active',
+    subscriptionStatus: 'pending_activation',
+    subscriptionEnd: addDays(-30), // lapsed, but a payment is awaiting approval
+  });
+  await db.collection('pharmacy_providers').doc('pharm_ib9_suspended').set({
+    status: 'suspended',
+    subscriptionStatus: 'active',
+    subscriptionEnd: addDays(-30),
+  });
+  await db.collection('pharmacy_providers').doc('pharm_ib9_rejected').set({
+    status: 'rejected',
+    subscriptionStatus: 'active',
+    subscriptionEnd: addDays(-30),
+  });
+
+  await expireCenters.run({});
+
+  const pending = (await db.collection('diagnostic_providers').doc('lab_ib9_pending').get()).data();
+  expect(pending.subscriptionStatus).toBe('pending_activation');
+  expect(pending.statusSyncedAt).toBeUndefined();
+
+  for (const id of ['pharm_ib9_suspended', 'pharm_ib9_rejected']) {
+    const doc = (await db.collection('pharmacy_providers').doc(id).get()).data();
+    expect(doc.subscriptionStatus).toBe('active'); // billing field untouched
+    expect(doc.statusSyncedAt).toBeUndefined();
+    expect(['suspended', 'rejected']).toContain(doc.status); // account state intact
+  }
+});
+
+test('IB-10 a provider with no subscription dates at all is left completely untouched', async () => {
+  await db.collection('pharmacy_providers').doc('pharm_ib10').set({
+    status: 'active',
+    subscriptionStatus: 'active',
+    currentPlan: 'pharmacy',
+    // Deliberately no trialEnds/subscriptionEnd/gracePeriodEnds — a
+    // grandfathered record the job has nothing to reason from.
+  });
+
+  await expireCenters.run({});
+
+  const after = (await db.collection('pharmacy_providers').doc('pharm_ib10').get()).data();
+  expect(after.subscriptionStatus).toBe('active');
+  expect(after.statusSyncedAt).toBeUndefined();
+});
+
+test('IB-11 the provider passes are idempotent, and never touch medical_centers', async () => {
+  await db.collection('medical_centers').doc('center_ib11').set({
+    ownerId: 'uid_owner_ib11',
+    centerStatus: 'operational',
+    subscriptionStatus: 'active',
+    trialEnds: addDays(60),
+  });
+  await db.collection('diagnostic_providers').doc('lab_ib11').set({
+    status: 'active',
+    subscriptionStatus: 'active',
+    subscriptionEnd: addDays(-20),
+  });
+
+  await expireCenters.run({});
+  const first = (await db.collection('diagnostic_providers').doc('lab_ib11').get()).data();
+  expect(first.subscriptionStatus).toBe('expired');
+  const firstSync = first.statusSyncedAt.toMillis();
+
+  // A second run must find nothing to do — no write, so the sync stamp is
+  // identical rather than merely re-stamped.
+  await expireCenters.run({});
+  const second = (await db.collection('diagnostic_providers').doc('lab_ib11').get()).data();
+  expect(second.subscriptionStatus).toBe('expired');
+  expect(second.statusSyncedAt.toMillis()).toBe(firstSync);
+
+  // The healthy center is unaffected by either provider pass.
+  const center = (await db.collection('medical_centers').doc('center_ib11').get()).data();
+  expect(center.centerStatus).toBe('operational');
+  expect(center.subscriptionStatus).toBe('active');
 });

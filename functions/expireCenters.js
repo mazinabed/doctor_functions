@@ -4,6 +4,7 @@ const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const {
   deriveTargetStatus,
+  deriveProviderSubscriptionStatus,
   deriveCommerceTargetStatus,
   deriveCommerceReminderStage,
   BATCH_LIMIT,
@@ -112,6 +113,76 @@ async function computeCommerceUpdate(db, docSnap, data, now) {
   }
 
   return { fields, statusChanged, reminderSent };
+}
+
+/**
+ * Syncs `subscriptionStatus` on one provider collection —
+ * `pharmacy_providers` or `diagnostic_providers`.
+ *
+ * These carry the SAME subscription date fields as a medical center but a
+ * different account-status field, so they get their own derivation
+ * (deriveProviderSubscriptionStatus) that writes subscriptionStatus and
+ * nothing else. An admin's suspended/rejected decision is never overwritten by
+ * a lapsed invoice.
+ *
+ * Reads the whole collection rather than filtering server-side: provider
+ * collections hold tens to hundreds of documents, and a `!=` filter would
+ * silently skip any document missing the field — exactly the stale ones this
+ * pass exists to correct.
+ *
+ * Like the center pass, this is REPORTING/SYNC ONLY. Access enforcement stays
+ * date-driven in the client and the rules, so a delayed or failed run cannot
+ * grant access to an expired provider.
+ */
+async function syncProviderCollection(db, collection, now) {
+  const snap = await db.collection(collection).get();
+  console.log(`expireCenters: ${snap.size} ${collection} candidate(s)`);
+
+  let batch = db.batch();
+  let batchCount = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  for (const docSnap of snap.docs) {
+    const data = docSnap.data();
+
+    const lifecycleStatus = data.accountLifecycle?.status;
+    if (lifecycleStatus &&
+        ['closurePending', 'closed', 'archived'].includes(lifecycleStatus)) {
+      skipped++;
+      continue;
+    }
+
+    const target = deriveProviderSubscriptionStatus(data, now);
+    if (!target) {
+      skipped++;
+      continue;
+    }
+
+    batch.update(docSnap.ref, {
+      ...target,
+      statusSyncedAt: FieldValue.serverTimestamp(),
+    });
+    batchCount++;
+    updated++;
+    console.log(
+      `expireCenters: queued ${collection}/${docSnap.id} → ` +
+      `subscriptionStatus=${target.subscriptionStatus}`
+    );
+
+    if (batchCount >= BATCH_LIMIT) {
+      await batch.commit();
+      batch = db.batch();
+      batchCount = 0;
+    }
+  }
+
+  if (batchCount > 0) await batch.commit();
+
+  console.log(
+    `expireCenters: ${collection} complete — updated=${updated} skipped=${skipped}`
+  );
+  return { updated, skipped };
 }
 
 exports.expireCenters = onSchedule(
@@ -241,9 +312,21 @@ exports.expireCenters = onSchedule(
       await lockedBatch.commit();
     }
 
+    // ── Provider collections ────────────────────────────────────────────────
+    // Pharmacies and labs keep their subscription on their OWN document, so
+    // the center pass above never touched them: a lapsed provider kept
+    // subscriptionStatus:'active' indefinitely. Access was unaffected (client
+    // and rules are date-driven), but every status-based query and admin list
+    // counted them as active.
+    const pharmacyResult =
+      await syncProviderCollection(db, 'pharmacy_providers', now);
+    const labResult =
+      await syncProviderCollection(db, 'diagnostic_providers', now);
+
     console.log(
       `expireCenters: complete — updated=${updated} skipped=${skipped} malformed=${malformed} ` +
-      `commerceUpdated=${commerceUpdated} commerceReminded=${commerceReminded}`
+      `commerceUpdated=${commerceUpdated} commerceReminded=${commerceReminded} ` +
+      `pharmacyUpdated=${pharmacyResult.updated} labUpdated=${labResult.updated}`
     );
   }
 );
