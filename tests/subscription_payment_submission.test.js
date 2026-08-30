@@ -438,18 +438,151 @@ describe('suspension cannot be bypassed by paying', () => {
     }, { merge: true }));
   });
 
-  test('a suspended lab submitting a payment leaves its status suspended', async () => {
+  // Policy: paying is not a remedy for an administrative decision, so the
+  // payment flow is closed to these accounts server-side - not merely hidden
+  // in the UI. Their route out is an admin, and the Billing page says so.
+  test('a suspended lab cannot re-initiate a renewal payment', async () => {
     const db = testEnv.authenticatedContext(LAB).firestore();
-    // Submitting the payment is permitted — it is a request for money to be
-    // reviewed, and it touches the payments doc only.
-    await assertSucceeds(setDoc(doc(db, 'payments', `open_lab_${LAB}`),
+    await assertFails(setDoc(doc(db, 'payments', `open_lab_${LAB}`),
+      labPayload(), { merge: true }));
+  });
+
+  test('a rejected pharmacy cannot re-initiate a renewal payment', async () => {
+    const db = testEnv.authenticatedContext(PHARM).firestore();
+    await assertFails(setDoc(doc(db, 'payments', `open_pharmacy_${PHARM}`),
+      pharmacyPayload(), { merge: true }));
+  });
+
+  test('a suspended lab cannot CREATE a brand-new payment doc either', async () => {
+    // Hiding the plan cards only removes the button. A suspended account with
+    // a console, a stale tab or a replayed request must hit the same wall.
+    const db = testEnv.authenticatedContext(LAB).firestore();
+    await assertFails(setDoc(doc(db, 'payments', 'sneaky_new_lab_payment'),
+      labPayload()));
+  });
+
+  test('a rejected pharmacy cannot create a brand-new payment doc', async () => {
+    const db = testEnv.authenticatedContext(PHARM).firestore();
+    await assertFails(setDoc(doc(db, 'payments', 'sneaky_new_pharmacy_payment'),
+      pharmacyPayload()));
+  });
+
+  test('a suspended lab cannot confirm transfer on an in-flight payment', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'payments', `open_lab_${LAB}`),
+        labPayload({ status: 'awaiting_transfer' }));
+    });
+    const db = testEnv.authenticatedContext(LAB).firestore();
+    await assertFails(updateDoc(doc(db, 'payments', `open_lab_${LAB}`), {
+      status: 'under_review', submittedAt: new Date(), updatedAt: new Date(),
+    }));
+  });
+
+  test('a suspended lab cannot resubmit a rejected payment', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'payments', `open_lab_${LAB}`),
+        labPayload({ status: 'rejected' }));
+    });
+    const db = testEnv.authenticatedContext(LAB).firestore();
+    await assertFails(setDoc(doc(db, 'payments', `open_lab_${LAB}`),
+      labPayload(), { merge: true }));
+  });
+
+  test('a suspended lab cannot dodge the block by blanking its own labId', async () => {
+    // labId is what selects the org document to check. Blanking it must not
+    // turn the check off - paymentPayerUnchanged pins it to the stored value.
+    const db = testEnv.authenticatedContext(LAB).firestore();
+    const blanked = labPayload();
+    delete blanked.labId;
+    await assertFails(setDoc(doc(db, 'payments', `open_lab_${LAB}`),
+      blanked, { merge: true }));
+  });
+
+  test('an ADMIN can still act on a suspended org payment', async () => {
+    // The block is on the client branches only - admin authority is untouched,
+    // so an admin can still reject or clean up an in-flight payment.
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'payments', `open_lab_${LAB}`),
+        labPayload({ status: 'under_review' }));
+    });
+    const db = testEnv.authenticatedContext('uid_admin').firestore();
+    await assertSucceeds(updateDoc(doc(db, 'payments', `open_lab_${LAB}`), {
+      status: 'rejected', rejectedAt: new Date(), rejectedBy: 'uid_admin',
+    }));
+  });
+
+  test('lifting the suspension restores the ability to submit', async () => {
+    // Proves the block tracks the administrative field and nothing else.
+    const db = testEnv.authenticatedContext(LAB).firestore();
+    await assertFails(setDoc(doc(db, 'payments', `open_lab_${LAB}`),
       labPayload(), { merge: true }));
 
     await testEnv.withSecurityRulesDisabled(async (ctx) => {
-      const { getDoc } = require('firebase/firestore');
-      const snap = await getDoc(doc(ctx.firestore(), 'diagnostic_providers', LAB));
-      // The administrative decision is untouched by the payment write.
-      expect(snap.data().status).toBe('suspended');
+      await setDoc(doc(ctx.firestore(), 'diagnostic_providers', LAB), {
+        userId: LAB, status: 'active',
+        subscriptionStatus: 'active', subscriptionEnd: PAST,
+      });
     });
+    await assertSucceeds(setDoc(doc(db, 'payments', `open_lab_${LAB}`),
+      labPayload(), { merge: true }));
+  });
+});
+
+// -- 7. The states that must keep working, alongside the new block ----------
+
+describe('the block is narrow: only suspended/rejected is closed', () => {
+  test('a pending (awaiting approval) account may still submit', async () => {
+    // 'pending' is an account awaiting admin review, not a suspension. It is
+    // not in the blocked set and must keep its normal billing flow.
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'diagnostic_providers', LAB), {
+        userId: LAB, status: 'pending',
+        subscriptionStatus: 'active', subscriptionEnd: PAST,
+      });
+    });
+    const db = testEnv.authenticatedContext(LAB).firestore();
+    await assertSucceeds(setDoc(doc(db, 'payments', `open_lab_${LAB}`),
+      labPayload(), { merge: true }));
+  });
+
+  test('an in-flight payment still advances for an active account', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'payments', `open_lab_${LAB}`),
+        labPayload({ status: 'awaiting_transfer' }));
+    });
+    const db = testEnv.authenticatedContext(LAB).firestore();
+    await assertSucceeds(updateDoc(doc(db, 'payments', `open_lab_${LAB}`), {
+      status: 'under_review', submittedAt: new Date(), updatedAt: new Date(),
+    }));
+  });
+
+  test('admin approval of that pending payment still succeeds', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'payments', `open_lab_${LAB}`),
+        labPayload({ status: 'under_review' }));
+    });
+    const db = testEnv.authenticatedContext('uid_admin').firestore();
+    await assertSucceeds(updateDoc(doc(db, 'payments', `open_lab_${LAB}`), {
+      status: 'completed', approvedAt: new Date(),
+      approvedBy: 'uid_admin', activatedAt: new Date(),
+    }));
+  });
+
+  test('an active expired center is unaffected by the new check', async () => {
+    const db = testEnv.authenticatedContext(CENTER_OWNER).firestore();
+    await assertSucceeds(setDoc(doc(db, 'payments', `open_center_${CENTER}`),
+      centerPayload(), { merge: true }));
+  });
+
+  test('a suspended CENTER is blocked by the same rule', async () => {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'medical_centers', CENTER), {
+        ownerId: CENTER_OWNER, isActive: true, status: 'suspended',
+        subscriptionStatus: 'active', subscriptionEnd: PAST,
+      });
+    });
+    const db = testEnv.authenticatedContext(CENTER_OWNER).firestore();
+    await assertFails(setDoc(doc(db, 'payments', `open_center_${CENTER}`),
+      centerPayload(), { merge: true }));
   });
 });

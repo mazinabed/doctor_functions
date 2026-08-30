@@ -1536,6 +1536,53 @@ service cloud.firestore {
           && request.resource.data.get('payerType', '')  == resource.data.get('payerType', '');
       }
 
+      // An administratively suspended or rejected organization may not open or
+      // advance a subscription payment.
+      //
+      // Paying cannot lift a suspension - only an admin can reverse it - so
+      // letting the payment flow run would present money as the remedy for a
+      // decision money has no bearing on. The UI hides the plan cards for this
+      // state; this is the same policy enforced server-side, so hiding a button
+      // is never the only thing standing between a suspended account and a
+      // payment record.
+      //
+      // Costs one document read per CLIENT payment write. A given organization
+      // submits a payment a handful of times a year, and the || chain
+      // short-circuits on the first matching shape, so at most one org document
+      // is ever read. The admin branch is deliberately not gated by this.
+      function orgSuspended(orgStatus) {
+        return orgStatus == 'suspended' || orgStatus == 'rejected';
+      }
+
+      function labBlocked(labId) {
+        return exists(/databases/$(database)/documents/diagnostic_providers/$(labId))
+          && orgSuspended(get(/databases/$(database)/documents/diagnostic_providers/$(labId))
+               .data.get('status', ''));
+      }
+
+      function pharmacyBlocked(pharmacyId) {
+        return exists(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId))
+          && orgSuspended(get(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId))
+               .data.get('status', ''));
+      }
+
+      function centerBlocked(centerId) {
+        return exists(/databases/$(database)/documents/medical_centers/$(centerId))
+          && orgSuspended(get(/databases/$(database)/documents/medical_centers/$(centerId))
+               .data.get('status', ''));
+      }
+
+      // True when the organization this payment belongs to is administratively
+      // blocked. Shape-driven, exactly like paymentPayerUnchanged().
+      function payerAdministrativelyBlocked(data) {
+        return (data.get('labId', '') != ''
+                && labBlocked(data.get('labId', '')))
+            || (data.get('pharmacyId', '') != ''
+                && pharmacyBlocked(data.get('pharmacyId', '')))
+            || (data.get('centerId', '') != ''
+                && centerBlocked(data.get('centerId', '')));
+      }
+
       // Admin approval/rejection fields. A client-side renewal may never
       // write these: activation stays the admin's decision alone.
       function touchesPaymentApprovalFields() {
@@ -1556,7 +1603,10 @@ service cloud.firestore {
 
       allow create: if isSignedIn()
         && (request.resource.data.userId == request.auth.uid
-            || request.resource.data.uid == request.auth.uid);
+            || request.resource.data.uid == request.auth.uid)
+        // A suspended/rejected organization cannot open a new payment: see
+        // payerAdministrativelyBlocked above.
+        && !payerAdministrativelyBlocked(request.resource.data);
 
       // Scoped client update: payment creator may submit (declared → under_review).
       // All other status transitions remain admin/server-only.
@@ -1571,6 +1621,7 @@ service cloud.firestore {
             && resource.data.uid == request.auth.uid
             && resource.data.status == 'declared'
             && request.resource.data.status == 'under_review'
+            && !payerAdministrativelyBlocked(resource.data)
             && request.resource.data.diff(resource.data).affectedKeys()
                  .hasOnly(['status', 'updatedAt', 'referenceNumber']))
         // Renewal: center owner may re-initiate payment from a completed cycle.
@@ -1594,6 +1645,7 @@ service cloud.firestore {
             && resource.data.status == 'completed'
             && request.resource.data.status in ['awaiting_transfer', 'declared']
             && paymentPayerUnchanged()
+            && !payerAdministrativelyBlocked(resource.data)
             && !touchesPaymentApprovalFields())
         // Confirm transfer: doctor marks awaiting_transfer payment as sent.
         // Only the original submitter may do this. hasOnly prevents writing
@@ -1604,6 +1656,7 @@ service cloud.firestore {
             && resource.data.uid == request.auth.uid
             && resource.data.status == 'awaiting_transfer'
             && request.resource.data.status == 'under_review'
+            && !payerAdministrativelyBlocked(resource.data)
             && request.resource.data.diff(resource.data).affectedKeys()
                  .hasOnly(['status', 'submittedAt', 'updatedAt', 'referenceNumber']))
         // Resubmit after rejection: original submitter or current center owner may
@@ -1619,6 +1672,7 @@ service cloud.firestore {
             && resource.data.status == 'rejected'
             && request.resource.data.status in ['awaiting_transfer', 'declared']
             && paymentPayerUnchanged()
+            && !payerAdministrativelyBlocked(resource.data)
             && !touchesPaymentApprovalFields());
     }
 
