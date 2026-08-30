@@ -9,7 +9,9 @@
  * Design:
  *   - Only processes documents that have a patient_referral_requests counterpart.
  *   - Early-exits if none of the three status fields changed (no unnecessary writes).
- *   - Writes only the three safe status fields + updatedAt (never clinical/result fields).
+ *   - Writes only the three safe status fields + updatedAt, plus `dispensedAt`
+ *     when the pharmacy has set it (never clinical/result fields, and never
+ *     `dispensedByUid` — that is staff identity, not patient information).
  *   - Pharmacy-only: emits patient notifications on 3 transitions via the
  *     TrustyDr Workflow & Notification Platform's shared Notification Engine
  *     (see NOTIFICATION_PLATFORM_PROGRESS.md at the ecosystem root -- Phase 3
@@ -76,12 +78,33 @@ exports.onClinicalReferralStatusUpdated = onDocumentUpdated(
     if (!referralSnap.exists) return;
 
     // Mirror only safe status fields — never clinical or result fields
-    await referralRef.update({
+    const mirrored = {
       partnerStatus:        after.partnerStatus        ?? before.partnerStatus        ?? 'sent',
       status:               after.status               ?? before.status               ?? 'pending',
       patientReleaseStatus: after.patientReleaseStatus ?? before.patientReleaseStatus ?? 'unreleased',
       updatedAt: FieldValue.serverTimestamp(),
-    });
+    };
+
+    // Durable fulfillment fact: WHEN the prescription was dispensed.
+    //
+    // The pharmacy writes `dispensedAt` on clinical_requests at dispense time,
+    // but the mirror copied only the three status fields, so the patient-safe
+    // projection knew a prescription was dispensed and never when. Combined
+    // with partnerProviderId and partnerName_{en,ar,ku} — both already
+    // projected at creation — the patient copy now holds the complete
+    // "filled by X on date Y" record that fulfillment history will need.
+    //
+    // Copied only when present, so a status change that is not a dispense
+    // never overwrites an existing timestamp with null.
+    //
+    // `dispensedByUid` is deliberately NOT mirrored: it identifies the
+    // individual pharmacy employee, the patient has no use for it, and the
+    // projection is patient-readable.
+    if (after.dispensedAt) {
+      mirrored.dispensedAt = after.dispensedAt;
+    }
+
+    await referralRef.update(mirrored);
 
     console.log(
       `onClinicalReferralStatusUpdated: mirrored ${requestId}` +

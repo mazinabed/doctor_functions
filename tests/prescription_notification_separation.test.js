@@ -185,3 +185,51 @@ describe('one evolving document, never one per stage', () => {
     expect(workflow.entityCollection).toBe('clinical_requests');
   });
 });
+
+describe('the patient-safe fulfillment projection keeps durable facts', () => {
+  // Read as source: these are trigger writes, and asserting them without the
+  // emulator is otherwise guesswork about what the projection contains.
+  const fs = require('fs');
+  const path = require('path');
+  const root = path.resolve(__dirname, '../functions/notifications');
+  const created = fs.readFileSync(path.join(root, 'onClinicalReferralCreated.js'), 'utf8');
+  const updated = fs.readFileSync(path.join(root, 'onClinicalReferralStatusUpdated.js'), 'utf8');
+
+  test('prescriptionId is projected — the link to the clinical record', () => {
+    // The link every future fulfillment episode hangs off. One prescription
+    // may later have many requests; nothing here binds it to one pharmacy.
+    expect(created).toContain('prescriptionId: data.prescriptionId');
+  });
+
+  test('the dispensing pharmacy identity is projected', () => {
+    expect(created).toContain('partnerProviderId,');
+    for (const f of ['partnerName_en:', 'partnerName_ar:', 'partnerName_ku:']) {
+      expect(created).toContain(f);
+    }
+  });
+
+  test('dispensedAt is now mirrored on status change', () => {
+    // Written on clinical_requests at dispense time, but the mirror copied
+    // only the three status fields, so the patient copy knew a prescription
+    // was dispensed and never when.
+    expect(updated).toContain('mirrored.dispensedAt = after.dispensedAt');
+  });
+
+  test('dispensedAt is copied only when present', () => {
+    // A later status change must not blank an existing timestamp.
+    expect(updated).toContain('if (after.dispensedAt)');
+  });
+
+  test('dispensedByUid is NOT exposed to the patient', () => {
+    // Staff identity, no patient-facing use, and this projection is
+    // patient-readable.
+    expect(created).not.toContain('dispensedByUid');
+    expect(updated).not.toMatch(/mirrored\.dispensedByUid|dispensedByUid:/);
+  });
+
+  test('the mirror still writes no clinical or result fields', () => {
+    for (const f of ['diagnosisNote', 'resultUrl', 'attachments']) {
+      expect(updated).not.toContain(`mirrored.${f}`);
+    }
+  });
+});
