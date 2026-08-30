@@ -1103,6 +1103,7 @@ service cloud.firestore {
                      'subscriptionStatus', 'centerStatus',
                      'trialStart', 'trialEnds',
                      'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
+                     'gracePeriodEnds', 'statusSyncedAt',
                      'currentPlan', 'billingCycle', 'paymentProvider',
                      'subscriptionVersion', 'lastPaymentAt', 'ownerId',
                      'commerceSubscriptionStatus', 'commerceTrialStart', 'commerceTrialEnds',
@@ -1117,6 +1118,7 @@ service cloud.firestore {
                      'subscriptionStatus', 'centerStatus',
                      'trialStart', 'trialEnds',
                      'nextBillingDate', 'subscriptionStart', 'subscriptionEnd',
+                     'gracePeriodEnds', 'statusSyncedAt',
                      'currentPlan', 'billingCycle', 'paymentProvider',
                      'subscriptionVersion', 'lastPaymentAt', 'ownerId',
                      'commerceSubscriptionStatus', 'commerceTrialStart', 'commerceTrialEnds',
@@ -1515,6 +1517,33 @@ service cloud.firestore {
     // ───────────────────────────────────────────────────────────────────────
 
     match /payments/{paymentId} {
+      // The payer identity on an open payment doc, across all three org
+      // shapes: a center payment carries centerId, a lab payment carries
+      // labId, a pharmacy payment carries pharmacyId. Every one of them is
+      // immutable across a renewal - a payer may restart their OWN cycle,
+      // never retarget the doc at another organization.
+      //
+      // Read through .get() defaults on purpose: a bare
+      // request.resource.data.centerId errors on the provider shapes, which
+      // is exactly what denied every lab and pharmacy renewal.
+      function paymentPayerUnchanged() {
+        return request.resource.data.uid == request.auth.uid
+          && request.resource.data.get('userId', request.auth.uid) == request.auth.uid
+          && request.resource.data.get('centerId', '')   == resource.data.get('centerId', '')
+          && request.resource.data.get('labId', '')      == resource.data.get('labId', '')
+          && request.resource.data.get('pharmacyId', '') == resource.data.get('pharmacyId', '')
+          && request.resource.data.get('payerId', '')    == resource.data.get('payerId', '')
+          && request.resource.data.get('payerType', '')  == resource.data.get('payerType', '');
+      }
+
+      // Admin approval/rejection fields. A client-side renewal may never
+      // write these: activation stays the admin's decision alone.
+      function touchesPaymentApprovalFields() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['approvedAt', 'approvedBy', 'activatedAt',
+                   'rejectedAt', 'rejectedBy', 'rejectionReason']);
+      }
+
       allow read: if isSignedIn()
         && (resource == null
             || resource.data.uid == request.auth.uid
@@ -1549,16 +1578,23 @@ service cloud.firestore {
         // .set(merge:true) on an existing doc evaluates as update in rules.
         // Target may be awaiting_transfer (new canonical) or declared (legacy);
         // activation still requires admin approval in both cases.
+        //
+        // Shape fix: this branch previously compared
+        // request.resource.data.centerId to resource.data.centerId directly.
+        // Lab and pharmacy payment docs carry labId/pharmacyId and NO
+        // centerId, so that comparison dereferenced a missing field and
+        // denied every provider renewal with permission-denied. First-time
+        // provider subscriptions were unaffected (they hit `allow create`),
+        // which is why this only surfaced when a lab tried to renew.
         || (isSignedIn()
             && (resource.data.uid == request.auth.uid
-                || (resource.data.centerId is string
-                    && resource.data.centerId.size() > 0
-                    && isCenterOwner(resource.data.centerId)))
+                || (resource.data.get('centerId', '') is string
+                    && resource.data.get('centerId', '').size() > 0
+                    && isCenterOwner(resource.data.get('centerId', ''))))
             && resource.data.status == 'completed'
             && request.resource.data.status in ['awaiting_transfer', 'declared']
-            && request.resource.data.centerId == resource.data.centerId
-            && request.resource.data.uid == request.auth.uid
-            && request.resource.data.userId == request.auth.uid)
+            && paymentPayerUnchanged()
+            && !touchesPaymentApprovalFields())
         // Confirm transfer: doctor marks awaiting_transfer payment as sent.
         // Only the original submitter may do this. hasOnly prevents writing
         // activation fields; actual activation still requires admin approval.
@@ -1574,15 +1610,16 @@ service cloud.firestore {
         // restart a rejected open payment doc. centerId is immutable; target may be
         // awaiting_transfer (new canonical) or declared (backward compat for legacy
         // clients). Activation still requires admin approval in both cases.
+        // Same shape fix as the renewal branch above.
         || (isSignedIn()
             && (resource.data.uid == request.auth.uid
-                || (resource.data.centerId is string
-                    && resource.data.centerId.size() > 0
-                    && isCenterOwner(resource.data.centerId)))
+                || (resource.data.get('centerId', '') is string
+                    && resource.data.get('centerId', '').size() > 0
+                    && isCenterOwner(resource.data.get('centerId', ''))))
             && resource.data.status == 'rejected'
             && request.resource.data.status in ['awaiting_transfer', 'declared']
-            && request.resource.data.centerId == resource.data.centerId
-            && request.resource.data.uid == request.auth.uid);
+            && paymentPayerUnchanged()
+            && !touchesPaymentApprovalFields());
     }
 
 
@@ -2338,10 +2375,18 @@ service cloud.firestore {
         && (isAdmin()
             || (isSignedIn()
                 && request.auth.uid == uid
+                // Billing dates are admin/Cloud-Function-only, exactly as on
+                // medical_centers. Operational access is derived from these
+                // dates, so an owner who could write subscriptionEnd or
+                // gracePeriodEnds could grant themselves unlimited free
+                // operation without any payment ever being approved.
                 && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
                      'status', 'isVerified', 'isActive',
                      'subscriptionStatus', 'trialStart', 'trialEnds',
-                     'verificationStatus', 'submittedAt'
+                     'verificationStatus', 'submittedAt',
+                     'subscriptionStart', 'subscriptionEnd', 'gracePeriodEnds',
+                     'nextBillingDate', 'currentPlan', 'billingCycle',
+                     'lastPaymentAt', 'lastPaymentAmountIQD', 'statusSyncedAt'
                    ])));
 
       allow delete: if isAdmin();
@@ -2527,10 +2572,18 @@ service cloud.firestore {
         && (isAdmin()
             || (isSignedIn()
                 && request.auth.uid == uid
+                // Billing dates are admin/Cloud-Function-only, exactly as on
+                // medical_centers. Operational access is derived from these
+                // dates, so an owner who could write subscriptionEnd or
+                // gracePeriodEnds could grant themselves unlimited free
+                // operation without any payment ever being approved.
                 && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
                      'status', 'isVerified', 'isActive',
                      'subscriptionStatus', 'trialStart', 'trialEnds',
-                     'verificationStatus', 'submittedAt'
+                     'verificationStatus', 'submittedAt',
+                     'subscriptionStart', 'subscriptionEnd', 'gracePeriodEnds',
+                     'nextBillingDate', 'currentPlan', 'billingCycle',
+                     'lastPaymentAt', 'lastPaymentAmountIQD', 'statusSyncedAt'
                    ])));
 
       allow delete: if isAdmin();
