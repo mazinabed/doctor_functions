@@ -22,7 +22,8 @@
  *     document (rx_received_/rx_ready_/rx_dispensed_<id>), the same "one
  *     notification per stage" pattern Marketplace had before its own Phase 1 fix.
  *
- * Pharmacy notification transitions:
+ * Pharmacy notification transitions (selected by destination status, so a
+ * skipped intermediate state such as received->ready still notifies):
  *   sent      → received  : "[Pharmacy] received your prescription."
  *   preparing → ready     : "Your prescription is ready for pickup at [Pharmacy]."
  *   ready     → dispensed : "Your prescription was dispensed by [Pharmacy]."
@@ -34,6 +35,26 @@ const { emitWorkflowEvent } = require('../lib/notificationPlatform/notificationE
 // Required for its side effect: registers the 'prescription'
 // WorkflowDefinition with the Workflow Registry.
 require('../lib/notificationPlatform/workflows/prescriptionWorkflow');
+
+/// partnerStatus -> prescription workflow stage.
+///
+/// Keyed by DESTINATION so a pharmacy that skips a step still notifies; any
+/// status not listed here (scheduled, checkedIn, noShow - the lab/imaging
+/// vocabulary) is deliberately absent and produces no patient notification.
+const STATUS_TO_STAGE = {
+  sent: 'sent',
+  received: 'received',
+  preparing: 'preparing',
+  ready: 'ready',
+  dispensed: 'dispensed',
+  cancelled: 'cancelled',
+};
+
+/// The stage a transition should emit, or null when it should not notify.
+function stageForTransition(beforeStatus, afterStatus) {
+  if (!afterStatus || afterStatus === beforeStatus) return null;
+  return STATUS_TO_STAGE[afterStatus] || null;
+}
 
 const STATUS_FIELDS = ['partnerStatus', 'status', 'patientReleaseStatus'];
 
@@ -77,14 +98,19 @@ exports.onClinicalReferralStatusUpdated = onDocumentUpdated(
 
     const patientId = referralData.patientId;
 
-    let toStage = null;
-    if (before.partnerStatus === 'sent' && after.partnerStatus === 'received') {
-      toStage = 'received';
-    } else if (before.partnerStatus === 'preparing' && after.partnerStatus === 'ready') {
-      toStage = 'ready';
-    } else if (before.partnerStatus === 'ready' && after.partnerStatus === 'dispensed') {
-      toStage = 'dispensed';
-    }
+    // Selected by DESTINATION status, not by (before, after) pairs.
+    //
+    // The pairwise form missed real transitions: a pharmacy with the stock on
+    // hand goes received -> ready without passing through `preparing`, and the
+    // old `before === 'preparing'` guard meant the patient was never told the
+    // prescription was ready. It also had no branch at all for `preparing` or
+    // `cancelled`, both of which the portal writes.
+    //
+    // Mapping on the destination means every meaningful state notifies once,
+    // however the pharmacy got there. Re-entry is safe: emitWorkflowEvent
+    // skips when the workflow document is already at this stage, so a retried
+    // trigger or an unrelated field update never re-notifies.
+    const toStage = stageForTransition(before.partnerStatus, after.partnerStatus);
 
     if (!toStage) return;
 
@@ -107,3 +133,7 @@ exports.onClinicalReferralStatusUpdated = onDocumentUpdated(
     );
   },
 );
+
+// Exported for unit tests; the trigger export above is unchanged.
+module.exports.STATUS_TO_STAGE = STATUS_TO_STAGE;
+module.exports.stageForTransition = stageForTransition;

@@ -24,6 +24,9 @@
  */
 
 const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { emitWorkflowEvent } = require('../lib/notificationPlatform/notificationEngine');
+// Registers the 'prescription' WorkflowDefinition as a side effect.
+require('../lib/notificationPlatform/workflows/prescriptionWorkflow');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getMessaging } = require('firebase-admin/messaging');
 
@@ -348,6 +351,49 @@ exports.onClinicalReferralCreated = onDocumentCreated(
     });
 
     // ── 6. Write patient notification ─────────────────────────────────────────
+    //
+    // Pharmacy takes the workflow rail; lab/imaging keeps the standalone
+    // referral notification it always had.
+    //
+    // Why the split: this notification used to be titled "New prescription"
+    // for pharmacy - the exact title onPrescriptionIssued gives the CLINICAL
+    // record - so a patient whose prescription was sent to a pharmacy got two
+    // notifications reading "New prescription" and no way to tell the clinical
+    // record from the fulfillment request. Seeding the prescription workflow
+    // at its `sent` stage instead gives fulfillment ONE document that then
+    // evolves through received -> preparing -> ready -> dispensed/cancelled,
+    // and leaves "New prescription" meaning the clinical record alone.
+    if (isPharmacy) {
+      try {
+        await emitWorkflowEvent(db, {
+          workflowType: 'prescription',
+          entityId: requestId,
+          recipientUid: patientId,
+          toStage: 'sent',
+          contentContext: {
+            partnerNameEn: partnerNameEn || partnerNameAr || '',
+            partnerNameAr: partnerNameAr || partnerNameEn || '',
+            partnerNameKu: partnerNameKu || partnerNameEn || '',
+            toStage: 'sent',
+          },
+        });
+        console.log(
+          `onClinicalReferralCreated: seeded prescription workflow ${requestId} at "sent"`,
+        );
+      } catch (e) {
+        // Non-fatal, and deliberately so: the clinical prescription record and
+        // its own notification are already in place, and the pharmacy still
+        // has the request. Losing the fulfillment announcement must never
+        // fail the trigger.
+        console.error(
+          `onClinicalReferralCreated: workflow seed non-fatal: ${e.message}`,
+        );
+      }
+      // NOT a return: section 8 below notifies the PHARMACY STAFF, and that
+      // must still run for exactly this case. emitWorkflowEvent has already
+      // sent the patient's push, so section 7 is skipped for pharmacy too.
+    }
+
     const notifId  = `referral_${requestId}`;
     const notifRef = db
       .collection('users')
@@ -355,8 +401,8 @@ exports.onClinicalReferralCreated = onDocumentCreated(
       .collection('notifications')
       .doc(notifId);
 
-    const existingNotif = await notifRef.get();
-    if (!existingNotif.exists) {
+    const existingNotif = isPharmacy ? null : await notifRef.get();
+    if (!isPharmacy && !existingNotif.exists) {
       await notifRef.set({
         type:              isPharmacy ? 'rx_referral' : 'lab_referral',
         clinicalRequestId: requestId,
@@ -383,7 +429,9 @@ exports.onClinicalReferralCreated = onDocumentCreated(
     }
 
     // ── 7. FCM push to patient (non-fatal) ────────────────────────────────────
-    try {
+    // Lab/imaging only — emitWorkflowEvent already pushed for pharmacy, and
+    // pushing again here would buzz the patient twice for one event.
+    if (!isPharmacy) try {
       const fcm = await sendFcmPush(db, patientId, {
         clinicalRequestId: requestId,
         ...notifContent,
