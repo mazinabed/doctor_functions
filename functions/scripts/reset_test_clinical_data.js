@@ -6,10 +6,11 @@
  *
  *     appointments · clinical_requests · schedules · slot_locks
  *
- * plus, for each deleted clinical_request, the derived records that would
- * otherwise be stranded (see "WHY THE EXTRAS" below). Collections themselves are
- * never deleted — Firestore has no such concept for a collection with no
- * documents, and nothing here issues a collection-group or database-wide delete.
+ * plus, for each deleted appointment and clinical_request, the derived records
+ * that would otherwise be stranded (see "WHY THE EXTRAS" below). Collections
+ * themselves are never deleted — Firestore has no such concept for a collection
+ * with no documents — and nothing here issues a collection-group or
+ * database-wide delete.
  *
  * DRY RUN BY DEFAULT. Deletion requires BOTH --execute and the exact
  * confirmation string. See USAGE at the bottom.
@@ -23,9 +24,12 @@
  * derived records simply remain, pointing at a document that no longer exists,
  * and several of them are patient-visible.
  *
- * For clinical_requests specifically, these are written on create/update and
- * are keyed off the SAME requestId:
+ * Every derived record below is addressed by a DETERMINISTIC id built from the
+ * source document's own id, under a recipient uid named by the source document
+ * itself. No collection-group scan, no field-equality sweep, no "delete
+ * everything under this user" — the blast radius is bounded by construction.
  *
+ * clinical_requests/{requestId}
  *   patient_referral_requests/{requestId}
  *       1:1 mirror. onClinicalReferralCreated.js:175 (create),
  *       onClinicalReferralStatusUpdated.js:76 (update).
@@ -34,8 +38,7 @@
  *       Real subcollection (firestore.rules:2293). Deleting a parent document
  *       does NOT delete its subcollections, so these need explicit recursion.
  *
- *   users/{recipientUid}/notifications/{notifId}
- *       Eight deterministic id patterns, all derived from requestId:
+ *   users/{recipientUid}/notifications/{notifId} — eight ids:
  *         referral_{id}                 onClinicalReferralCreated.js:397
  *         rx_created_{id}               onClinicalReferralCreated.js:450
  *         lab_appt_created_{id}         onLabAppointmentCreated.js:125
@@ -44,23 +47,32 @@
  *         reminder_{id}_same_day        sendSameDayReminders.js:250
  *         wf_lab_order_{id}             notificationEngine.js:45 + labOrderWorkflow.js:43
  *         wf_prescription_{id}          notificationEngine.js:45 + prescriptionWorkflow.js:42
- *       Every one also carries a clinicalRequestId field, used below purely as
- *       a post-delete VERIFICATION read — never as a deletion selector.
+ *
+ * appointments/{appointmentId}
+ *   users/{recipientUid}/notifications/{notifId} — four ids:
+ *         reminder_{id}_2_day           sendDailyReminders.js:246
+ *         reminder_{id}_1_day           sendDailyReminders.js:246
+ *         reminder_{id}_same_day        sendSameDayReminders.js:156
+ *         wf_appointment_{id}           onAppointmentStatusUpdated.js:19,90
+ *
+ *       All three writers resolve the recipient identically:
+ *           bookedByUserId when it differs from patientId, else patientId
+ *       (sendDailyReminders.js:228, sendSameDayReminders.js:146,
+ *        onAppointmentStatusUpdated.js:83). This script probes BOTH uids rather
+ *       than recomputing that single winner — see appointmentRecipientUids().
  *
  * -----------------------------------------------------------------------------
  * NOT IN SCOPE — deliberately
  * -----------------------------------------------------------------------------
- * Deleting `appointments` strands its own notifications by exactly the same
- * mechanism: reminder_{appointmentId}_2_day / _1_day / _same_day and
- * wf_appointment_{appointmentId}. Cleaning those was NOT authorised for this
- * run, so this script does not touch them — it REPORTS the count instead
- * (see reportAppointmentNotificationExposure). Re-run with a widened scope
- * only after an explicit decision.
+ * Notification subcollections are never enumerated or cleared. Only the exact
+ * deterministic ids above are addressed, and only for source documents actually
+ * being deleted. Any other notification a user holds is left untouched.
  *
  * Never touched: patient_prescriptions, users (the documents themselves),
  * doctors, medical_centers, pharmacy_providers, diagnostic_providers, patients,
  * medication/catalog, taxonomy, config, subscription plans, Commerce/Odoo,
- * rules, indexes.
+ * rules, indexes. No Cloud Function is disabled — none needs to be, since no
+ * delete trigger exists to suppress.
  *
  * -----------------------------------------------------------------------------
  * CREDENTIALS
@@ -92,8 +104,11 @@ const MAX_EXPECTED = {
 
 const TARGET_COLLECTIONS = ["appointments", "clinical_requests", "schedules", "slot_locks"];
 
+/** Collections whose documents are deleted outright, with no derived records. */
+const PLAIN_COLLECTIONS = ["schedules", "slot_locks"];
+
 /** Notification ids derived from a clinical_request id. */
-function notificationIdsFor(requestId) {
+function notificationIdsForClinicalRequest(requestId) {
   return [
     `referral_${requestId}`,
     `rx_created_${requestId}`,
@@ -106,23 +121,51 @@ function notificationIdsFor(requestId) {
   ];
 }
 
+/** Notification ids derived from an appointment id. */
+function notificationIdsForAppointment(appointmentId) {
+  return [
+    `reminder_${appointmentId}_2_day`,
+    `reminder_${appointmentId}_1_day`,
+    `reminder_${appointmentId}_same_day`,
+    `wf_appointment_${appointmentId}`,
+  ];
+}
+
+function uniqueUids(values) {
+  return [...new Set(values.filter((v) => typeof v === "string" && v.length > 0))];
+}
+
 /**
- * Users who could hold a notification for this request. Read from the request
- * document itself rather than discovered by a collection-group scan, so the
- * blast radius stays bounded to uids this request actually names.
+ * Users who could hold a notification for this clinical request. Read from the
+ * request document itself rather than discovered by a scan, so the blast radius
+ * stays bounded to uids this request actually names.
  */
-function recipientCandidates(data) {
-  return [...new Set([data.patientId, data.partnerProviderId, data.doctorId, data.centerId].filter(
-    (v) => typeof v === "string" && v.length > 0,
-  ))];
+function clinicalRequestRecipientUids(data) {
+  return uniqueUids([data.patientId, data.partnerProviderId, data.doctorId, data.centerId]);
+}
+
+/**
+ * Users who could hold a notification for this appointment.
+ *
+ * The three writers all resolve a SINGLE recipient as
+ *     bookedByUserId when it differs from patientId, else patientId
+ * so recomputing that rule would name one uid. This returns BOTH candidates
+ * instead — deliberately. A notification written before bookedByUserId was set
+ * (or before it changed) sits under the other uid, and recomputing today's
+ * winner would silently strand it. Both uids come from the appointment document
+ * itself, and every candidate is existence-checked before it is queued, so
+ * probing two rather than one widens nothing: a document that does not exist is
+ * never deleted.
+ */
+function appointmentRecipientUids(data) {
+  return uniqueUids([data.patientId, data.bookedByUserId]);
 }
 
 function parseArgs(argv) {
   const execute = argv.includes("--execute");
   const confirmArg = argv.find((a) => a.startsWith("--confirm="));
   const confirm = confirmArg ? confirmArg.slice("--confirm=".length) : null;
-  const verifyOrphans = argv.includes("--verify-orphans");
-  return { execute, confirm, verifyOrphans };
+  return { execute, confirm };
 }
 
 function banner(mode) {
@@ -132,7 +175,7 @@ function banner(mode) {
   console.log("=".repeat(78));
 }
 
-async function resolveProjectId() {
+function resolveProjectId() {
   const app = admin.app();
   const fromOptions = app.options && app.options.projectId;
   const fromEnv = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
@@ -144,10 +187,11 @@ async function deleteRefs(db, refs) {
   const CHUNK = 400;
   let deleted = 0;
   for (let i = 0; i < refs.length; i += CHUNK) {
+    const slice = refs.slice(i, i + CHUNK);
     const batch = db.batch();
-    for (const ref of refs.slice(i, i + CHUNK)) batch.delete(ref);
+    for (const ref of slice) batch.delete(ref);
     await batch.commit();
-    deleted += Math.min(CHUNK, refs.length - i);
+    deleted += slice.length;
   }
   return deleted;
 }
@@ -158,21 +202,61 @@ async function listRefs(collectionRef) {
   return snap.docs.map((d) => d.ref);
 }
 
+/**
+ * Existence-checks each (uid, notifId) pair and returns refs for those that
+ * actually exist, so the printed plan is the literal delete list.
+ */
+async function existingNotificationRefs(db, uids, notifIds) {
+  const found = [];
+  for (const uid of uids) {
+    for (const notifId of notifIds) {
+      const ref = db.collection("users").doc(uid).collection("notifications").doc(notifId);
+      // eslint-disable-next-line no-await-in-loop
+      const snap = await ref.get();
+      if (snap.exists) found.push(ref);
+    }
+  }
+  return found;
+}
+
 async function buildPlan(db) {
   const plan = {
     counts: {},
+    appointments: [],
     clinicalRequests: [],
-    simple: {},
-    totals: { attachments: 0, referralMirrors: 0, notifications: 0 },
+    plain: {},
+    totals: {
+      attachments: 0,
+      referralMirrors: 0,
+      clinicalRequestNotifications: 0,
+      appointmentNotifications: 0,
+    },
   };
 
-  for (const name of TARGET_COLLECTIONS) {
+  for (const name of PLAIN_COLLECTIONS) {
     const refs = await listRefs(db.collection(name));
     plan.counts[name] = refs.length;
-    if (name !== "clinical_requests") plan.simple[name] = refs;
+    plan.plain[name] = refs;
   }
 
+  // ── appointments ──────────────────────────────────────────────────────────
+  const apptSnap = await db.collection("appointments").get();
+  plan.counts.appointments = apptSnap.size;
+  for (const doc of apptSnap.docs) {
+    const data = doc.data() || {};
+    const recipients = appointmentRecipientUids(data);
+    const notifRefs = await existingNotificationRefs(
+      db,
+      recipients,
+      notificationIdsForAppointment(doc.id),
+    );
+    plan.appointments.push({ id: doc.id, docRef: doc.ref, notifRefs, recipients });
+    plan.totals.appointmentNotifications += notifRefs.length;
+  }
+
+  // ── clinical_requests ─────────────────────────────────────────────────────
   const crSnap = await db.collection("clinical_requests").get();
+  plan.counts.clinical_requests = crSnap.size;
   for (const doc of crSnap.docs) {
     const requestId = doc.id;
     const data = doc.data() || {};
@@ -182,20 +266,15 @@ async function buildPlan(db) {
     const mirrorRef = db.collection("patient_referral_requests").doc(requestId);
     const mirrorSnap = await mirrorRef.get();
 
-    const recipients = recipientCandidates(data);
-    const notifIds = notificationIdsFor(requestId);
-    const notifRefs = [];
-    for (const uid of recipients) {
-      for (const notifId of notifIds) {
-        const ref = db.collection("users").doc(uid).collection("notifications").doc(notifId);
-        // eslint-disable-next-line no-await-in-loop
-        const snap = await ref.get();
-        if (snap.exists) notifRefs.push(ref);
-      }
-    }
+    const recipients = clinicalRequestRecipientUids(data);
+    const notifRefs = await existingNotificationRefs(
+      db,
+      recipients,
+      notificationIdsForClinicalRequest(requestId),
+    );
 
     plan.clinicalRequests.push({
-      requestId,
+      id: requestId,
       docRef: doc.ref,
       attachments,
       mirrorRef: mirrorSnap.exists ? mirrorRef : null,
@@ -205,7 +284,7 @@ async function buildPlan(db) {
 
     plan.totals.attachments += attachments.length;
     plan.totals.referralMirrors += mirrorSnap.exists ? 1 : 0;
-    plan.totals.notifications += notifRefs.length;
+    plan.totals.clinicalRequestNotifications += notifRefs.length;
   }
 
   return plan;
@@ -216,21 +295,30 @@ function printPlan(plan) {
   for (const name of TARGET_COLLECTIONS) {
     console.log(`  ${name.padEnd(20)} ${plan.counts[name]}`);
   }
-  console.log("\n── DERIVED RECORDS (clinical_requests only) ─────────────────────");
-  console.log(`  attachments (subcollection)      ${plan.totals.attachments}`);
-  console.log(`  patient_referral_requests mirrors ${plan.totals.referralMirrors}`);
-  console.log(`  notifications                     ${plan.totals.notifications}`);
+
+  console.log("\n── DERIVED RECORDS ALSO IN SCOPE ────────────────────────────────");
+  console.log(`  attachments (clinical_requests subcollection)  ${plan.totals.attachments}`);
+  console.log(`  patient_referral_requests mirrors              ${plan.totals.referralMirrors}`);
+  console.log(
+    `  notifications (from clinical_requests)         ${plan.totals.clinicalRequestNotifications}`,
+  );
+  console.log(
+    `  notifications (from appointments)              ${plan.totals.appointmentNotifications}`,
+  );
 
   console.log("\n── EXACT DOCUMENTS TO DELETE ────────────────────────────────────");
-  for (const name of TARGET_COLLECTIONS) {
-    if (name === "clinical_requests") continue;
-    for (const ref of plan.simple[name]) console.log(`  ${ref.path}`);
+  for (const item of plan.appointments) {
+    console.log(`  appointments/${item.id}`);
+    for (const ref of item.notifRefs) console.log(`      ${ref.path}`);
   }
   for (const item of plan.clinicalRequests) {
-    console.log(`  clinical_requests/${item.requestId}`);
+    console.log(`  clinical_requests/${item.id}`);
     for (const ref of item.attachments) console.log(`      ${ref.path}`);
     if (item.mirrorRef) console.log(`      ${item.mirrorRef.path}`);
     for (const ref of item.notifRefs) console.log(`      ${ref.path}`);
+  }
+  for (const name of PLAIN_COLLECTIONS) {
+    for (const ref of plan.plain[name]) console.log(`  ${ref.path}`);
   }
 }
 
@@ -252,23 +340,6 @@ function assertSaneVolume(plan) {
   }
 }
 
-/**
- * Read-only. Reports how many appointment-derived notifications WOULD be
- * stranded by clearing `appointments`, without touching them — cleaning those
- * was not authorised for this run.
- */
-async function reportAppointmentNotificationExposure(db, plan) {
-  const apptIds = (plan.simple.appointments || []).map((r) => r.id);
-  if (apptIds.length === 0) return;
-  console.log("\n── NOT DELETED: appointment-derived notifications ───────────────");
-  console.log(
-    `  ${apptIds.length} appointment(s) will be deleted. Their notifications\n` +
-      "  (reminder_{id}_2_day / _1_day / _same_day, wf_appointment_{id}) are NOT in\n" +
-      "  scope for this run and will remain, referencing deleted appointments.\n" +
-      "  Decide separately whether to clean them.",
-  );
-}
-
 async function verifyAfter(db, plan) {
   console.log("\n── VERIFICATION ─────────────────────────────────────────────────");
   let ok = true;
@@ -277,19 +348,20 @@ async function verifyAfter(db, plan) {
     // eslint-disable-next-line no-await-in-loop
     const remaining = (await db.collection(name).select().limit(1).get()).size;
     const label = remaining === 0 ? "0 remaining  OK" : `${remaining}+ REMAINING`;
-    console.log(`  ${name.padEnd(20)} ${label}`);
+    console.log(`  ${name.padEnd(34)} ${label}`);
     if (remaining !== 0) ok = false;
   }
 
+  // Orphaned referral mirrors — a mirror whose source clinical_request is gone.
   const staleMirrors = [];
   for (const item of plan.clinicalRequests) {
-    const ref = db.collection("patient_referral_requests").doc(item.requestId);
+    const ref = db.collection("patient_referral_requests").doc(item.id);
     // eslint-disable-next-line no-await-in-loop
     const snap = await ref.get();
-    if (snap.exists) staleMirrors.push(item.requestId);
+    if (snap.exists) staleMirrors.push(item.id);
   }
   console.log(
-    `  orphaned patient_referral_requests  ${
+    `  ${"orphaned patient_referral_requests".padEnd(34)} ${
       staleMirrors.length === 0 ? "none  OK" : `${staleMirrors.length} REMAINING`
     }`,
   );
@@ -298,14 +370,35 @@ async function verifyAfter(db, plan) {
     for (const id of staleMirrors) console.log(`      patient_referral_requests/${id}`);
   }
 
+  // Every notification this run planned to delete is actually gone.
+  const planned = [
+    ...plan.appointments.flatMap((i) => i.notifRefs),
+    ...plan.clinicalRequests.flatMap((i) => i.notifRefs),
+  ];
+  const staleNotifs = [];
+  for (const ref of planned) {
+    // eslint-disable-next-line no-await-in-loop
+    const snap = await ref.get();
+    if (snap.exists) staleNotifs.push(ref.path);
+  }
+  console.log(
+    `  ${"orphaned notifications".padEnd(34)} ${
+      staleNotifs.length === 0 ? "none  OK" : `${staleNotifs.length} REMAINING`
+    }`,
+  );
+  if (staleNotifs.length > 0) {
+    ok = false;
+    for (const p of staleNotifs) console.log(`      ${p}`);
+  }
+
   return ok;
 }
 
 async function main() {
-  const { execute, confirm, verifyOrphans } = parseArgs(process.argv.slice(2));
+  const { execute, confirm } = parseArgs(process.argv.slice(2));
 
   admin.initializeApp();
-  const projectId = await resolveProjectId();
+  const projectId = resolveProjectId();
 
   if (projectId !== REQUIRED_PROJECT_ID) {
     console.error(
@@ -322,16 +415,10 @@ async function main() {
   const plan = await buildPlan(db);
   printPlan(plan);
   assertSaneVolume(plan);
-  await reportAppointmentNotificationExposure(db, plan);
 
   if (!execute) {
     console.log("\nDRY RUN — nothing was deleted.");
-    console.log(
-      `To delete, re-run with:\n  --execute --confirm=${REQUIRED_CONFIRMATION}\n`,
-    );
-    if (verifyOrphans) {
-      console.log("(--verify-orphans only has an effect after --execute.)");
-    }
+    console.log(`To delete, re-run with:\n  --execute --confirm=${REQUIRED_CONFIRMATION}\n`);
     return;
   }
 
@@ -345,43 +432,67 @@ async function main() {
 
   console.log("\n── DELETING ─────────────────────────────────────────────────────");
 
-  // Dependents first, source last — nothing here fires a trigger (there are no
+  // Dependents first, source last. Nothing here fires a trigger (there are no
   // delete triggers), but this ordering means an interrupted run never leaves a
-  // mirror whose source is already gone.
-  let notifDeleted = 0;
-  let attachmentsDeleted = 0;
-  let mirrorsDeleted = 0;
-
-  for (const item of plan.clinicalRequests) {
-    notifDeleted += await deleteRefs(db, item.notifRefs);
-    attachmentsDeleted += await deleteRefs(db, item.attachments);
-    if (item.mirrorRef) mirrorsDeleted += await deleteRefs(db, [item.mirrorRef]);
+  // derived record whose source is already gone.
+  let apptNotifs = 0;
+  for (const item of plan.appointments) {
+    apptNotifs += await deleteRefs(db, item.notifRefs);
     await deleteRefs(db, [item.docRef]);
   }
-  console.log(`  notifications              ${notifDeleted}`);
-  console.log(`  attachments                ${attachmentsDeleted}`);
-  console.log(`  patient_referral_requests  ${mirrorsDeleted}`);
-  console.log(`  clinical_requests          ${plan.clinicalRequests.length}`);
+  console.log(`  ${"notifications (appointments)".padEnd(30)} ${apptNotifs}`);
+  console.log(`  ${"appointments".padEnd(30)} ${plan.appointments.length}`);
 
-  for (const name of TARGET_COLLECTIONS) {
-    if (name === "clinical_requests") continue;
-    const n = await deleteRefs(db, plan.simple[name]);
-    console.log(`  ${name.padEnd(26)} ${n}`);
+  let crNotifs = 0;
+  let attachments = 0;
+  let mirrors = 0;
+  for (const item of plan.clinicalRequests) {
+    crNotifs += await deleteRefs(db, item.notifRefs);
+    attachments += await deleteRefs(db, item.attachments);
+    if (item.mirrorRef) mirrors += await deleteRefs(db, [item.mirrorRef]);
+    await deleteRefs(db, [item.docRef]);
+  }
+  console.log(`  ${"notifications (clinical_requests)".padEnd(30)} ${crNotifs}`);
+  console.log(`  ${"attachments".padEnd(30)} ${attachments}`);
+  console.log(`  ${"patient_referral_requests".padEnd(30)} ${mirrors}`);
+  console.log(`  ${"clinical_requests".padEnd(30)} ${plan.clinicalRequests.length}`);
+
+  for (const name of PLAIN_COLLECTIONS) {
+    const n = await deleteRefs(db, plan.plain[name]);
+    console.log(`  ${name.padEnd(30)} ${n}`);
   }
 
   const ok = await verifyAfter(db, plan);
   console.log(
     ok
-      ? "\nDONE — all four collections are empty and no referral mirrors were orphaned."
+      ? "\nDONE — all four collections are empty, no referral mirrors orphaned,\n" +
+          "and every targeted notification is gone."
       : "\nCOMPLETED WITH WARNINGS — see REMAINING entries above.",
   );
   if (!ok) process.exit(2);
 }
 
-main().catch((err) => {
-  console.error("\nFAILED:", err && err.message ? err.message : err);
-  process.exit(1);
-});
+// Only run when invoked directly, so scripts/test_reset_test_clinical_data.js
+// can require the pure helpers without touching Firestore.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("\nFAILED:", err && err.message ? err.message : err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  REQUIRED_PROJECT_ID,
+  REQUIRED_CONFIRMATION,
+  MAX_EXPECTED,
+  TARGET_COLLECTIONS,
+  PLAIN_COLLECTIONS,
+  notificationIdsForClinicalRequest,
+  notificationIdsForAppointment,
+  clinicalRequestRecipientUids,
+  appointmentRecipientUids,
+  parseArgs,
+};
 
 /*
  * USAGE
@@ -393,6 +504,9 @@ main().catch((err) => {
  *
  *   # 2. after reviewing the dry-run output
  *   node scripts/reset_test_clinical_data.js --execute --confirm=RESET-TEST-CLINICAL-DATA
+ *
+ * Offline safety check (no credentials, no network):
+ *   node scripts/test_reset_test_clinical_data.js
  *
  * Credentials come from Application Default Credentials — set
  * GOOGLE_APPLICATION_CREDENTIALS, or use an active gcloud ADC login for
