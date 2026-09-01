@@ -69,6 +69,24 @@ const BUCKET_NAME = "doctorapp-7e8b3.firebasestorage.app";
  */
 const PROTECTED_PREFIXES = ["specialty_icons/"];
 
+/**
+ * EXPLICIT ONE-TIME EXCEPTION (2026-09-01).
+ *
+ * Objects owned by these uids are treated as deletable even though the uid
+ * still exists in Firestore. This exists for exactly one reason: the operator
+ * wants a clean Storage baseline and intends to recreate this test doctor from
+ * scratch, so their uploaded files must go with them.
+ *
+ * This deliberately inverts the script's normal safety direction, so it is
+ * narrow on purpose: an explicit uid list, not a pattern, not a role, not a
+ * date cutoff. Nothing is inferred. Empty this set once the baseline is taken.
+ *
+ * Firestore is NOT touched — only the uid's Storage objects.
+ */
+const DELETABLE_UID_EXCEPTIONS = new Set([
+  "SqQGcXuDkaOFaI0NlLwTeqr67fv1", // fresh test doctor, to be recreated from scratch
+]);
+
 /** Refuse to run against anything that does not look like a test-sized cleanup. */
 const LIMITS = {
   maxDeleteObjects: 5000,
@@ -102,6 +120,17 @@ const PREFIX_RULES = [
     template: "doctor_docs/{uid}/{fileName}",
     mode: "any",
     parse: (parts) => (parts.length === 3 && parts[1] ? { uid: parts[1] } : null),
+    /**
+     * A superseded upload convention: doctor_docs/{millis}_{slot}_{name}.{ext}
+     * with NO uid segment, so ownership cannot be derived from the path.
+     *
+     * These are AMBIGUOUS by default and preserved. They only become deletable
+     * with --include-legacy-doctor-docs, which is opt-in precisely because the
+     * "prove the owner is gone" rule cannot be applied to them — the argument
+     * for deleting them is contextual (no live record references any of them,
+     * and no current code path reads this shape) rather than provable per file.
+     */
+    legacyFlat: (parts) => parts.length === 2 && parts[1].length > 0,
     // storage.rules:33-35 — used by ALL onboarding flows, clinical doctors AND
     // diagnostic providers, so a uid alive in either keeps the document.
     owners: [
@@ -226,6 +255,7 @@ function parseArgs(argv) {
   return {
     execute: argv.includes("--execute"),
     confirm: confirmArg ? confirmArg.slice("--confirm=".length) : null,
+    includeLegacyDoctorDocs: argv.includes("--include-legacy-doctor-docs"),
   };
 }
 
@@ -255,7 +285,9 @@ function makeOwnerChecker(db) {
  * Classifies one object. Returns { klass, rule, ids, aliveVia, reason }.
  * klass is one of: protected | active | ambiguous | orphaned.
  */
-async function classify(objectName, exists) {
+async function classify(objectName, exists, options = {}) {
+  // The protected check runs first and unconditionally — before rules, before
+  // exceptions, before any option can influence the outcome.
   if (isProtected(objectName)) {
     return { klass: "protected", reason: "hard-protected shared platform prefix" };
   }
@@ -263,12 +295,33 @@ async function classify(objectName, exists) {
   if (!rule) {
     return { klass: "ambiguous", reason: "no known path template for this prefix" };
   }
-  const ids = rule.parse(segments(objectName));
+  const parts = segments(objectName);
+  const ids = rule.parse(parts);
   if (!ids) {
+    if (options.includeLegacyDoctorDocs && rule.legacyFlat?.(parts)) {
+      return {
+        klass: "orphaned",
+        rule,
+        ids: {},
+        reason: "legacy flat path with no uid segment — opted in via --include-legacy-doctor-docs",
+      };
+    }
     return {
       klass: "ambiguous",
       rule,
       reason: `path does not match the documented template ${rule.template}`,
+    };
+  }
+
+  // Explicit one-time exception: this owner's files go even though the owner
+  // still exists. Never applies to a protected prefix — that returned above.
+  const excepted = Object.values(ids).find((v) => DELETABLE_UID_EXCEPTIONS.has(v));
+  if (excepted) {
+    return {
+      klass: "orphaned",
+      rule,
+      ids,
+      reason: `explicit one-time deletion exception for ${excepted} (owner still exists in Firestore)`,
     };
   }
 
@@ -348,7 +401,8 @@ function printTable(title, byPrefix) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { execute, confirm } = parseArgs(process.argv.slice(2));
+  const { execute, confirm, includeLegacyDoctorDocs } = parseArgs(process.argv.slice(2));
+  const options = { includeLegacyDoctorDocs };
 
   admin.initializeApp({ projectId: REQUIRED_PROJECT_ID, storageBucket: BUCKET_NAME });
   const resolved = admin.app().options.projectId;
@@ -371,6 +425,10 @@ async function main() {
   console.log(`  ORPHANED STORAGE CLEANUP — ${execute ? "EXECUTE" : "DRY RUN"}`);
   console.log(`  project: ${REQUIRED_PROJECT_ID}   bucket: ${BUCKET_NAME}`);
   console.log(`  PROTECTED (never touched): ${PROTECTED_PREFIXES.join(", ")}`);
+  if (DELETABLE_UID_EXCEPTIONS.size > 0) {
+    console.log(`  ONE-TIME DELETE EXCEPTIONS (owner exists, files still go): ${[...DELETABLE_UID_EXCEPTIONS].join(", ")}`);
+  }
+  console.log(`  legacy flat doctor_docs/: ${includeLegacyDoctorDocs ? "INCLUDED (--include-legacy-doctor-docs)" : "excluded (ambiguous, preserved)"}`);
   console.log("=".repeat(100));
 
   const exists = makeOwnerChecker(db);
@@ -388,7 +446,7 @@ async function main() {
     if (!byPrefix.has(top)) byPrefix.set(top, blankBucket());
 
     // eslint-disable-next-line no-await-in-loop
-    const result = await classify(name, exists);
+    const result = await classify(name, exists, options);
     add(byPrefix.get(top), result.klass, name, size);
 
     if (result.klass === "orphaned") orphans.push({ file, name, size, result });
@@ -456,7 +514,7 @@ async function main() {
   // the plan built above. An account created since then keeps its files.
   const recheck = makeOwnerChecker(db);
   for (const o of orphans) {
-    const again = await classify(o.name, recheck);
+    const again = await classify(o.name, recheck, options);
     if (again.klass !== "orphaned") {
       skipped.push({ name: o.name, klass: again.klass, reason: again.reason });
       continue;
@@ -520,6 +578,7 @@ module.exports = {
   REQUIRED_CONFIRMATION,
   BUCKET_NAME,
   PROTECTED_PREFIXES,
+  DELETABLE_UID_EXCEPTIONS,
   PREFIX_RULES,
   LIMITS,
   isProtected,

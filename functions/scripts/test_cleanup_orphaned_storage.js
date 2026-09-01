@@ -165,6 +165,78 @@ async function run() {
     assert(kept.klass === "active", `a live visit note did not preserve its photo (${kept.klass})`);
   });
 
+  // ─── The explicit one-time uid exception ─────────────────────────────────
+
+  await check("an excepted uid's files are deletable even though the owner exists", async () => {
+    const uid = [...cleanup.DELETABLE_UID_EXCEPTIONS][0];
+    assert(uid, "no exception uid configured");
+    // Owner very much alive in every collection — the exception must still win.
+    const alive = ownerStub([`doctors/${uid}`, `users/${uid}`]);
+    for (const name of [`doctor_docs/${uid}/license.jpg`, `doctor_profiles/${uid}.jpg`, `profile_images/${uid}.jpg`]) {
+      const r = await cleanup.classify(name, alive);
+      assert(r.klass === "orphaned", `${name} classified ${r.klass}, expected orphaned via exception`);
+      assert(/exception/i.test(r.reason), `reason does not name the exception: ${r.reason}`);
+    }
+  });
+
+  await check("the exception is narrow — a different live uid is still preserved", async () => {
+    const alive = ownerStub(["doctors/someOtherDoctor", "users/someOtherDoctor"]);
+    const r = await cleanup.classify("doctor_docs/someOtherDoctor/license.jpg", alive);
+    assert(r.klass === "active", `a non-excepted live owner was classified ${r.klass}`);
+  });
+
+  await check("the exception can NEVER override the protected prefix", async () => {
+    const uid = [...cleanup.DELETABLE_UID_EXCEPTIONS][0];
+    const alive = ownerStub([]);
+    // Even a specialty icon whose name contains the excepted uid stays protected.
+    const r = await cleanup.classify(`specialty_icons/${uid}.png`, alive);
+    assert(r.klass === "protected", `a specialty icon was classified ${r.klass}`);
+  });
+
+  // ─── Legacy flat doctor_docs, opt-in only ────────────────────────────────
+
+  await check("legacy flat doctor_docs are ambiguous WITHOUT the opt-in flag", async () => {
+    const dead = ownerStub([]);
+    for (const name of [
+      "doctor_docs/1764390688482_license_neurology.png",
+      "doctor_docs/1764390709869_license_help.pdf",
+    ]) {
+      const r = await cleanup.classify(name, dead);
+      assert(r.klass === "ambiguous", `${name} classified ${r.klass} without the flag`);
+    }
+  });
+
+  await check("legacy flat doctor_docs become orphaned WITH the opt-in flag", async () => {
+    const dead = ownerStub([]);
+    const r = await cleanup.classify(
+      "doctor_docs/1764390688482_license_neurology.png",
+      dead,
+      { includeLegacyDoctorDocs: true },
+    );
+    assert(r.klass === "orphaned", `classified ${r.klass} with the flag`);
+    assert(/legacy flat/i.test(r.reason), `reason does not explain the opt-in: ${r.reason}`);
+  });
+
+  await check("the legacy flag does not widen anything else", async () => {
+    const dead = ownerStub([]);
+    const opts = { includeLegacyDoctorDocs: true };
+    // Still protected.
+    assert((await cleanup.classify("specialty_icons/a.png", dead, opts)).klass === "protected", "flag reached specialty_icons");
+    // Still ambiguous — unknown prefixes and other malformed paths are untouched.
+    for (const name of ["mystery/file.bin", "profile_images/deep/nested.jpg", "visit_note_photos/ctr1/apt1", "centers/"]) {
+      const r = await cleanup.classify(name, dead, opts);
+      assert(r.klass === "ambiguous", `${name} became ${r.klass} under the legacy flag`);
+    }
+  });
+
+  await check("the legacy opt-in is a flag, off by default", () => {
+    assert(cleanup.parseArgs([]).includeLegacyDoctorDocs === false, "legacy inclusion defaulted on");
+    assert(
+      cleanup.parseArgs(["--include-legacy-doctor-docs"]).includeLegacyDoctorDocs === true,
+      "flag not parsed",
+    );
+  });
+
   // ─── Ambiguity always preserves ──────────────────────────────────────────
 
   await check("an unknown prefix is ambiguous, never orphaned", async () => {
@@ -260,7 +332,7 @@ async function run() {
 
   await check("execute re-verifies ownership instead of trusting the plan", () => {
     assert(/const recheck = makeOwnerChecker\(db\)/.test(src), "no fresh owner checker in execute");
-    assert(/await cleanup?\.?classify\(o\.name, recheck\)|await classify\(o\.name, recheck\)/.test(src), "execute does not re-classify");
+    assert(/await classify\(o\.name, recheck(, options)?\)/.test(src), "execute does not re-classify");
   });
 
   await check("Firestore, Auth and Odoo are never mutated", () => {
