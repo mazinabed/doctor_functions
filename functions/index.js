@@ -2325,6 +2325,7 @@ exports.adminRejectStandaloneSubscriptionPayment = adminRejectStandaloneSubscrip
 const {
   adminSearchOrganizations,
   adminGetStandaloneCommerceOverview,
+  adminListStandaloneOrganizations,
   adminUpdateSponsoredChannels,
   adminListSponsoredPlacementRequests,
   adminApproveSponsoredPlacementRequest,
@@ -2332,6 +2333,7 @@ const {
 } = require("./commerce/adminSponsoredPlacements");
 exports.adminSearchOrganizations = adminSearchOrganizations;
 exports.adminGetStandaloneCommerceOverview = adminGetStandaloneCommerceOverview;
+exports.adminListStandaloneOrganizations = adminListStandaloneOrganizations;
 exports.adminUpdateSponsoredChannels = adminUpdateSponsoredChannels;
 exports.adminListSponsoredPlacementRequests = adminListSponsoredPlacementRequests;
 exports.adminApproveSponsoredPlacementRequest = adminApproveSponsoredPlacementRequest;

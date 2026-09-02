@@ -138,6 +138,27 @@ exports.adminGetStandaloneCommerceOverview = onCall({ region: "us-central1" }, a
   });
 });
 
+// Paginated listing of standalone Commerce businesses for the admin portal's
+// business-management screen.
+//
+// Separate from adminSearchOrganizations above, which requires a query string
+// and ranks by name match for a picker — its contract is relied on by two live
+// screens and its rank-then-slice shape cannot paginate. Commerce applies the
+// commerce_only scope to the query itself, so no Healthcare-origin projection
+// can be returned whatever the caller passes.
+exports.adminListStandaloneOrganizations = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  const { type, subscriptionStatus, status, cursor, pageSize } = request.data || {};
+  return callCommerce("listStandaloneOrganizationsForHealthcare", {
+    actorUid: request.auth.uid,
+    type: typeof type === "string" ? type : undefined,
+    subscriptionStatus: typeof subscriptionStatus === "string" ? subscriptionStatus : undefined,
+    status: typeof status === "string" ? status : undefined,
+    cursor: cursor && typeof cursor === "object" ? cursor : undefined,
+    pageSize: typeof pageSize === "number" ? pageSize : undefined,
+  });
+});
+
 exports.adminUpdateSponsoredChannels = onCall({ region: "us-central1" }, async (request) => {
   await requireAdmin(request);
   const { orgId, sponsoredChannels } = request.data || {};
