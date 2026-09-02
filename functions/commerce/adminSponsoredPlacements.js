@@ -159,6 +159,22 @@ exports.adminListStandaloneOrganizations = onCall({ region: "us-central1" }, asy
   });
 });
 
+// One standalone Commerce business, for the admin detail screen. Commerce
+// enforces the same standalone scope the list and counts use and answers
+// "not found" for anything outside it, so a Healthcare-origin organization
+// cannot be inspected through this path.
+exports.adminGetStandaloneOrganization = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  const { orgId } = request.data || {};
+  if (!orgId || typeof orgId !== "string") {
+    throw new HttpsError("invalid-argument", "orgId is required.");
+  }
+  return callCommerce("getStandaloneOrganizationForHealthcare", {
+    actorUid: request.auth.uid,
+    orgId,
+  });
+});
+
 exports.adminUpdateSponsoredChannels = onCall({ region: "us-central1" }, async (request) => {
   await requireAdmin(request);
   const { orgId, sponsoredChannels } = request.data || {};

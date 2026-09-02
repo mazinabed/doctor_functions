@@ -2326,6 +2326,7 @@ const {
   adminSearchOrganizations,
   adminGetStandaloneCommerceOverview,
   adminListStandaloneOrganizations,
+  adminGetStandaloneOrganization,
   adminUpdateSponsoredChannels,
   adminListSponsoredPlacementRequests,
   adminApproveSponsoredPlacementRequest,
@@ -2334,6 +2335,7 @@ const {
 exports.adminSearchOrganizations = adminSearchOrganizations;
 exports.adminGetStandaloneCommerceOverview = adminGetStandaloneCommerceOverview;
 exports.adminListStandaloneOrganizations = adminListStandaloneOrganizations;
+exports.adminGetStandaloneOrganization = adminGetStandaloneOrganization;
 exports.adminUpdateSponsoredChannels = adminUpdateSponsoredChannels;
 exports.adminListSponsoredPlacementRequests = adminListSponsoredPlacementRequests;
 exports.adminApproveSponsoredPlacementRequest = adminApproveSponsoredPlacementRequest;

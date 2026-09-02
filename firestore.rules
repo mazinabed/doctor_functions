@@ -1069,10 +1069,26 @@ service cloud.firestore {
       // Active centers: public read (no auth required) — used for center discovery.
       // Owner/member: can read even when isActive == false (e.g. billing page on inactive center).
       // resource == null: allow GET on non-existent docs (returns exists=false, not permission-denied).
+      // isAdmin() restores parity with every sibling collection: doctors,
+      // pharmacy_providers, diagnostic_providers and payments all already end
+      // their read clause with `|| isAdmin()`. medical_centers was the only
+      // Healthcare organization collection an admin could not read, which is
+      // why Subscription Management returned permission-denied.
+      //
+      // It also has to be a document-INDEPENDENT clause to fix a list query at
+      // all: Firestore admits a query only when the rule is satisfiable from
+      // the query's own constraints, and every other clause here
+      // (isActive/ownerId/isCenterMember) is per-document, so
+      // `where('subscriptionStatus','==','active')` could never be evaluated.
+      // This is the same shape payments/{paymentId} already uses.
+      //
+      // Not a widening of what admins may see - an admin can already read every
+      // doctor, pharmacy, laboratory and payment record.
       allow read: if resource == null
         || resource.data.get('isActive', false) == true
         || (isSignedIn() && resource.data.ownerId == request.auth.uid)
-        || (isSignedIn() && isCenterMember(centerId));
+        || (isSignedIn() && isCenterMember(centerId))
+        || isAdmin();
 
       // Billing fields permitted on creation (doctor or diagnostic provider sets up initial trial).
       // These same fields are blocked from updates by the owner below.
