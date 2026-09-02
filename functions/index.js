@@ -2324,12 +2324,14 @@ exports.adminRejectStandaloneSubscriptionPayment = adminRejectStandaloneSubscrip
 // adminStandaloneSubscriptionPayments.js above.
 const {
   adminSearchOrganizations,
+  adminGetStandaloneCommerceOverview,
   adminUpdateSponsoredChannels,
   adminListSponsoredPlacementRequests,
   adminApproveSponsoredPlacementRequest,
   adminRejectSponsoredPlacementRequest,
 } = require("./commerce/adminSponsoredPlacements");
 exports.adminSearchOrganizations = adminSearchOrganizations;
+exports.adminGetStandaloneCommerceOverview = adminGetStandaloneCommerceOverview;
 exports.adminUpdateSponsoredChannels = adminUpdateSponsoredChannels;
 exports.adminListSponsoredPlacementRequests = adminListSponsoredPlacementRequests;
 exports.adminApproveSponsoredPlacementRequest = adminApproveSponsoredPlacementRequest;

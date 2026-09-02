@@ -122,6 +122,22 @@ exports.adminSearchOrganizations = onCall({ region: "us-central1" }, async (requ
   });
 });
 
+// Aggregate counts of standalone Commerce businesses for the admin dashboard.
+//
+// mydoctor_admin has no Commerce Firebase config, and adminSearchOrganizations
+// above requires a non-empty query and returns a capped, ranked search — there
+// was no way to obtain totals without enumerating organizations into the
+// browser and counting them there. Commerce computes the aggregate and returns
+// counts only; no organization document crosses this boundary.
+//
+// Same admin gate and same relay as every other function in this file.
+exports.adminGetStandaloneCommerceOverview = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  return callCommerce("getStandaloneCommerceOverviewForHealthcare", {
+    actorUid: request.auth.uid,
+  });
+});
+
 exports.adminUpdateSponsoredChannels = onCall({ region: "us-central1" }, async (request) => {
   await requireAdmin(request);
   const { orgId, sponsoredChannels } = request.data || {};
