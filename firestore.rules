@@ -377,6 +377,34 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)).data.userId == request.auth.uid;
     }
 
+    // Active member of a pharmacy, ANY role (pharmacy_admin, pharmacist,
+    // assistant, delivery). Scoped to a specific pharmacyId.
+    //
+    // Authority is the pharmacy_members subcollection, not users/{uid}, so a
+    // staff member cannot escalate by editing their own users doc. isActive is
+    // required, so a deactivated member loses access immediately.
+    //
+    // Narrower than isPharmacyMember(): that one ignores isActive. Used only by
+    // the operational-status mirror grant; isPharmacyMember() is left untouched
+    // so every existing behaviour is unchanged. Mirrors isActiveCenterMember().
+    function isActivePharmacyMember(pharmacyId) {
+      return isSignedIn()
+        && pharmacyId is string
+        && pharmacyId.size() > 0
+        && exists(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)/pharmacy_members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/pharmacy_providers/$(pharmacyId)/pharmacy_members/$(request.auth.uid)).data.get('isActive', false) == true;
+    }
+
+    // Active member of a laboratory / imaging centre, ANY role. Exact mirror of
+    // isActivePharmacyMember over diagnostic_providers/.../lab_members.
+    function isActiveLabMember(labId) {
+      return isSignedIn()
+        && labId is string
+        && labId.size() > 0
+        && exists(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/diagnostic_providers/$(labId)/lab_members/$(request.auth.uid)).data.get('isActive', false) == true;
+    }
+
     // Pharmacy admin via pharmacy_members subcollection — source of truth for
     // admin access. Mirrors isLabAdminMember; role value is 'pharmacy_admin'.
     function isPharmacyAdminMember(pharmacyId) {
@@ -2505,6 +2533,40 @@ service cloud.firestore {
 
       allow delete: if isAdmin();
 
+      // ── diagnostic_providers/{labId}/operational/status ───────────────────
+      //
+      // Server-owned projection of the FIVE subscription fields the access gate
+      // consumes: status, subscriptionStatus, trialEnds, subscriptionEnd,
+      // gracePeriodEnds. Written only by the admin SDK
+      // (functions/index.js syncLabOperationalStatus and the backfill
+      // script); see functions/lib/operationalStatusMirror.js for the exact
+      // projection and the do-not-add list.
+      //
+      // WHY A MIRROR AND NOT A WIDER READ ON THE PARENT
+      //
+      // centerAccessProvider must resolve "may this organization operate" for
+      // STAFF as well as the owner — an expired lab must not keep running
+      // because an employee signed in instead of the owner. The parent document
+      // cannot serve that: it carries the owner's nationalIdNumber, idFrontUrl,
+      // idBackUrl, licenseDocUrl and personal phone/email, so its read rule
+      // above stays owner-and-admin-only. Firestore cannot project fields in a
+      // rule, so the projection is materialized here instead.
+      //
+      // Read:  active member of THIS lab (any role), the owner, or an admin.
+      //        isActiveLabMember() requires isActive, so a deactivated
+      //        member loses the signal at once, and the grant is scoped to this
+      //        document's own parent — a member of one lab can never read
+      //        another's.
+      // Write: never from a client, in either direction. A staff member who
+      //        could write this could grant their employer unlimited free
+      //        operation, which is exactly what the parent's own billing-field
+      //        guard exists to prevent.
+      match /operational/{docId} {
+        allow read: if isSignedIn()
+          && (request.auth.uid == uid || isActiveLabMember(uid) || isAdmin());
+        allow write: if false;
+      }
+
       // ── diagnostic_providers/{labId}/legalHistory/{historyId} ──────────────
       //
       // Legal Consent Modernization Phase 2 — append-only acceptance history
@@ -2701,6 +2763,40 @@ service cloud.firestore {
                    ])));
 
       allow delete: if isAdmin();
+
+      // ── pharmacy_providers/{pharmacyId}/operational/status ────────────────
+      //
+      // Server-owned projection of the FIVE subscription fields the access gate
+      // consumes: status, subscriptionStatus, trialEnds, subscriptionEnd,
+      // gracePeriodEnds. Written only by the admin SDK
+      // (functions/index.js syncPharmacyOperationalStatus and the backfill
+      // script); see functions/lib/operationalStatusMirror.js for the exact
+      // projection and the do-not-add list.
+      //
+      // WHY A MIRROR AND NOT A WIDER READ ON THE PARENT
+      //
+      // centerAccessProvider must resolve "may this organization operate" for
+      // STAFF as well as the owner — an expired pharmacy must not keep running
+      // because an employee signed in instead of the owner. The parent document
+      // cannot serve that: it carries the owner's nationalIdNumber, idFrontUrl,
+      // idBackUrl, licenseDocUrl and personal phone/email, so its read rule
+      // above stays owner-and-admin-only. Firestore cannot project fields in a
+      // rule, so the projection is materialized here instead.
+      //
+      // Read:  active member of THIS pharmacy (any role), the owner, or an admin.
+      //        isActivePharmacyMember() requires isActive, so a deactivated
+      //        member loses the signal at once, and the grant is scoped to this
+      //        document's own parent — a member of one pharmacy can never read
+      //        another's.
+      // Write: never from a client, in either direction. A staff member who
+      //        could write this could grant their employer unlimited free
+      //        operation, which is exactly what the parent's own billing-field
+      //        guard exists to prevent.
+      match /operational/{docId} {
+        allow read: if isSignedIn()
+          && (request.auth.uid == uid || isActivePharmacyMember(uid) || isAdmin());
+        allow write: if false;
+      }
 
       // ── pharmacy_providers/{pharmacyId}/legalHistory/{historyId} ───────────
       //

@@ -1844,6 +1844,12 @@ const db = admin.firestore();
 const { isPublicEligible, buildPublicDoc } = require("./lib/publicDoctorSanitizer");
 const { isProviderPublicEligible, buildPublicProviderDoc } = require("./lib/publicDiagnosticProviderSanitizer");
 const { isPharmacyPublicEligible, buildPublicPharmacyDoc } = require("./lib/publicPharmacyProviderSanitizer");
+const {
+  OPERATIONAL_COLLECTION,
+  OPERATIONAL_DOC_ID,
+  buildOperationalStatus,
+  operationalStatusChanged,
+} = require("./lib/operationalStatusMirror");
 
 exports.attachDoctorOwnership = onDocumentUpdated(
   "doctors/{doctorId}",
@@ -2044,6 +2050,82 @@ exports.syncPublicPharmacyProvider = onDocumentWritten(
     await publicRef.set(publicDoc);
     console.log(`public_pharmacy_providers: synced ${pharmacyId}`);
   }
+);
+
+// ─── Provider operational-status mirror ───────────────────────────────────────
+//
+// Projects the five subscription fields the access gate consumes into
+//
+//   pharmacy_providers/{pharmacyId}/operational/status
+//   diagnostic_providers/{labId}/operational/status
+//
+// so an ACTIVE pharmacy/lab staff member can resolve whether their employer may
+// operate WITHOUT reading the parent provider document — which carries the
+// owner's national ID number, ID and licence document URLs, and personal phone
+// and email, and therefore stays owner-and-admin-only in firestore.rules.
+//
+// See lib/operationalStatusMirror.js for the projection and the do-not-add list.
+//
+// Deliberately separate triggers rather than an extension of
+// syncPublicPharmacyProvider / syncPublicDiagnosticProvider: those two build a
+// PATIENT-facing projection gated on `status === 'active' && isVerified`, and a
+// lapsed or suspended organization is removed from them entirely — which is
+// precisely the state the access gate must still be able to observe. Merging
+// the two concerns would make the access decision depend on public-listing
+// eligibility.
+
+async function syncOperationalStatus(collectionName, providerId, event) {
+  const before = event.data.before;
+  const after = event.data.after;
+  const mirrorRef = db
+    .collection(collectionName)
+    .doc(providerId)
+    .collection(OPERATIONAL_COLLECTION)
+    .doc(OPERATIONAL_DOC_ID);
+
+  if (!after.exists) {
+    await mirrorRef.delete();
+    console.log(
+      `${collectionName}/${providerId}/operational: removed (source doc deleted)`
+    );
+    return;
+  }
+
+  const nextData = after.data();
+
+  // A profile edit, a rename or a document upload touches none of the mirrored
+  // fields. Writing anyway would double the write cost of every provider save.
+  // The mirror must still be created the first time even when nothing changed,
+  // so an existence check precedes the no-op short-circuit.
+  const mirrorSnap = await mirrorRef.get();
+  if (
+    mirrorSnap.exists &&
+    before.exists &&
+    !operationalStatusChanged(before.data(), nextData)
+  ) {
+    return;
+  }
+
+  const payload = buildOperationalStatus(nextData);
+  payload.syncedAt = admin.firestore.FieldValue.serverTimestamp();
+
+  await mirrorRef.set(payload);
+  console.log(
+    `${collectionName}/${providerId}/operational: synced ` +
+    `(status=${payload.status}, subscriptionStatus=${payload.subscriptionStatus})`
+  );
+}
+
+exports.syncPharmacyOperationalStatus = onDocumentWritten(
+  "pharmacy_providers/{pharmacyId}",
+  async (event) =>
+    syncOperationalStatus("pharmacy_providers", event.params.pharmacyId, event)
+);
+
+exports.syncLabOperationalStatus = onDocumentWritten(
+  "diagnostic_providers/{providerId}",
+  async (event) =>
+    syncOperationalStatus("diagnostic_providers", event.params.providerId, event)
 );
 
 // ─── Keep diagnostic_providers.centerId in sync with published schedules ───────
