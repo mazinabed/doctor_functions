@@ -50,6 +50,7 @@ function resolveVerifiedPhoneNumber(decoded) {
 }
 
 exports.resolveVerifiedPhoneNumber = resolveVerifiedPhoneNumber;
+exports.resolveWholesalePermissions = resolveWholesalePermissions;
 
 // Legal Consent Modernization (Phase 3 — Healthcare→Commerce bridge
 // entitlement). Read-only, resolved FRESH on every call directly from the
@@ -80,6 +81,105 @@ exports.resolveVerifiedPhoneNumber = resolveVerifiedPhoneNumber;
 // second migration later — but are owner-only for now (no lab_members/
 // center members staff-delegation query added here yet, since no live
 // Commerce caller exercises that path).
+// ─── Healthcare Wholesale staff context (2026-09) ────────────────────────────
+//
+// The three Wholesale permission keys, identical in CenterPermission,
+// PharmacyPermission and LabPermission (doctor_portal's WholesalePermission is
+// the single definition all three re-export). Commerce maps each to one of its
+// own wholesale.* actions; nothing else from the member document crosses this
+// bridge.
+//
+// Minimum Data Exchange, exactly as pharmacyStaffStoreAccess already does:
+// never the member's full permissions array, never clinical data, never
+// anything Commerce has no decision to make with.
+const WHOLESALE_PERMISSION_KEYS = [
+  "wholesale_access",
+  "wholesale_orders_view",
+  "wholesale_orders_create",
+];
+
+// The dependency, enforced server-side: orders-view and orders-create are
+// meaningless without access. A member document that somehow holds a child
+// without the parent (a hand edit, an older client) reports NO wholesale
+// permissions at all rather than a half-granted set Commerce would have to
+// interpret. Fail closed, and identically to the Flutter side's own
+// WholesalePermission.grants().
+function resolveWholesalePermissions(memberData) {
+  const stored = Array.isArray(memberData && memberData.permissions)
+    ? memberData.permissions
+    : [];
+  if (!stored.includes("wholesale_access")) return [];
+  return WHOLESALE_PERMISSION_KEYS.filter((key) => stored.includes(key));
+}
+
+// Which Healthcare organization this caller may buy for, and what they may do.
+//
+// One resolver for all three organization types, because the permission keys
+// are shared and their meaning must not diverge per type. Returns the
+// organization's own Healthcare id — the pharmacy_providers /
+// diagnostic_providers / medical_centers document id — which Commerce turns
+// into its deterministic orgId (hc_pharmacy_*, hc_lab_*, hc_medical_center_*).
+// Never the caller's own uid: a staff member is not their employer.
+//
+// Deliberately independent of pharmacyStaffStoreAccess. Store access and
+// Wholesale access are separate grants on the same member document and must
+// stay independently representable — Store-only, Wholesale-only, both, or
+// neither.
+async function resolveWholesaleStaffContext({ db, uid, pharmacyMembershipSnap }) {
+  const empty = {
+    isWholesaleStaff: false,
+    wholesaleOrgType: null,
+    wholesaleOrgHealthcareId: null,
+    wholesalePermissions: [],
+  };
+
+  // Pharmacy membership is already fetched by the caller — reuse it rather
+  // than paying for the same query twice.
+  const candidates = [];
+  if (pharmacyMembershipSnap && !pharmacyMembershipSnap.empty) {
+    candidates.push({ type: "pharmacy", doc: pharmacyMembershipSnap.docs[0] });
+  }
+
+  if (candidates.length === 0) {
+    const centerSnap = await db
+      .collectionGroup("members")
+      .where("uid", "==", uid)
+      .where("isActive", "==", true)
+      .limit(1)
+      .get();
+    if (!centerSnap.empty) {
+      candidates.push({ type: "medical_center", doc: centerSnap.docs[0] });
+    }
+  }
+
+  if (candidates.length === 0) {
+    const labSnap = await db
+      .collectionGroup("lab_members")
+      .where("uid", "==", uid)
+      .where("isActive", "==", true)
+      .limit(1)
+      .get();
+    if (!labSnap.empty) {
+      candidates.push({ type: "lab", doc: labSnap.docs[0] });
+    }
+  }
+
+  if (candidates.length === 0) return empty;
+
+  const { type, doc } = candidates[0];
+  const permissions = resolveWholesalePermissions(doc.data());
+  if (permissions.length === 0) return empty;
+
+  return {
+    isWholesaleStaff: true,
+    wholesaleOrgType: type,
+    // The parent organization document id — medical_centers/{centerId},
+    // pharmacy_providers/{pharmacyId} or diagnostic_providers/{labId}.
+    wholesaleOrgHealthcareId: doc.ref.parent.parent.id,
+    wholesalePermissions: permissions,
+  };
+}
+
 function buildLegalCoverage(facilityType, facilitySnap, currentVersion, acceptanceKey) {
   if (!facilitySnap || !facilitySnap.exists) {
     return { facilityType, current: false, version: currentVersion };
@@ -184,8 +284,16 @@ exports.resolveAccessContext = onRequest(
       const userDoc = await db.collection("users").doc(uid).get();
       const role = userDoc.exists ? (userDoc.data().role || "doctor") : "doctor";
 
-      // Only pharmacy_members matters for Milestone 2A's owner-only rule —
-      // center/lab membership is irrelevant to pharmacy Commerce activation.
+      // Pharmacy membership drives the Store/ERP paths below.
+      //
+      // Healthcare Wholesale staff permissions (2026-09) — center and lab
+      // membership are now resolved too (see resolveWholesaleStaffContext
+      // below). Until now this file resolved pharmacy staff ONLY, which its
+      // own header described as deliberate ("owner-only for now ... no
+      // lab_members/center members staff-delegation query added here yet,
+      // since no live Commerce caller exercises that path"). Wholesale is
+      // that caller: a medical centre and a lab employee must be able to be
+      // granted procurement authority exactly as a pharmacy employee can.
       const pharmacyMembershipSnap = await db
         .collectionGroup("pharmacy_members")
         .where("uid", "==", uid)
@@ -383,6 +491,12 @@ exports.resolveAccessContext = onRequest(
         }
       }
 
+      const wholesaleStaff = await resolveWholesaleStaffContext({
+        db,
+        uid,
+        pharmacyMembershipSnap,
+      });
+
       const healthcareLegalCoverage = await resolveHealthcareLegalCoverage({
         db,
         uid,
@@ -402,6 +516,13 @@ exports.resolveAccessContext = onRequest(
         pharmacyStaffPharmacyId,
         pharmacyStaffStoreAccess,
         pharmacyStaffPhoneNumber,
+        // Healthcare Wholesale staff context — see
+        // resolveWholesaleStaffContext. Only the wholesale_* subset crosses
+        // the bridge, never the member's full permissions array.
+        isWholesaleStaff: wholesaleStaff.isWholesaleStaff,
+        wholesaleOrgType: wholesaleStaff.wholesaleOrgType,
+        wholesaleOrgHealthcareId: wholesaleStaff.wholesaleOrgHealthcareId,
+        wholesalePermissions: wholesaleStaff.wholesalePermissions,
         labProviderStatus,
         labFacilityName,
         doctorIsVerified,
