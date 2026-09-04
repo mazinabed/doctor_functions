@@ -12,13 +12,19 @@ const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 const PAST   = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
 
+// Emulator address. Defaults to the firebase.json port (8080); override with
+// FIRESTORE_EMULATOR_HOST=127.0.0.1:PORT when 8080 is taken on the machine.
+const [EMULATOR_HOST, EMULATOR_PORT] = (
+  process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080'
+).split(':');
+
 async function createTestEnv() {
   return initializeTestEnvironment({
     projectId: PROJECT_ID,
     firestore: {
       rules: fs.readFileSync(RULES_PATH, 'utf8'),
-      host: '127.0.0.1',
-      port: 8080,
+      host: EMULATOR_HOST,
+      port: Number(EMULATOR_PORT),
     },
   });
 }
@@ -185,6 +191,60 @@ async function seedDatabase(testEnv) {
       userId: 'uid_billing_owner',
       centerId: 'billing_center',
       status: 'pending',
+    });
+
+    // ── Reception staff access fixtures ──────────────────────────────────
+    // Reproduces the live Center Reception -> New Appointment failure: a staff
+    // member is an active member of the center but has NO doctors/{uid} doc and
+    // NO users.centerRole == 'center_admin', so isDoctor()/isCenterAdmin() are
+    // both false for them.
+    await setDoc(doc(db, 'users', 'uid_center_staff'), {
+      role: 'staff', centerRole: 'receptionist', centerId: 'center1',
+    });
+    await setDoc(doc(db, 'medical_centers/center1/members', 'uid_center_staff'), {
+      uid: 'uid_center_staff', role: 'receptionist', isActive: true,
+    });
+
+    // Deactivated staff of center1 — must lose access immediately.
+    await setDoc(doc(db, 'users', 'uid_inactive_staff'), {
+      role: 'staff', centerRole: 'receptionist', centerId: 'center1',
+    });
+    await setDoc(doc(db, 'medical_centers/center1/members', 'uid_inactive_staff'), {
+      uid: 'uid_inactive_staff', role: 'receptionist', isActive: false,
+    });
+
+    // A bookable doctor belonging to center1 (centerId set, as createPractice
+    // and approveJoinRequest both do).
+    await setDoc(doc(db, 'users', 'uid_center_doctor'), { role: 'doctor' });
+    await setDoc(doc(db, 'doctors', 'uid_center_doctor'), {
+      name_en: 'Dr Noor', isActive: true, centerId: 'center1',
+    });
+
+    // A second, unrelated center — cross-center isolation fixtures.
+    await setDoc(doc(db, 'medical_centers', 'center2'), {
+      ownerId: 'uid_center2_doctor', isActive: true, name_en: 'Other Center',
+      trialEnds: FUTURE,
+    });
+    await setDoc(doc(db, 'users', 'uid_center2_doctor'), { role: 'doctor' });
+    await setDoc(doc(db, 'doctors', 'uid_center2_doctor'), {
+      name_en: 'Dr Other', isActive: true, centerId: 'center2',
+    });
+
+    // Schedules for the reception booking flow.
+    // isActive is deliberately false on the published ones so the pre-existing
+    // "published && isActive" PUBLIC clause cannot be what grants access —
+    // only the center-member clause can.
+    await setDoc(doc(db, 'schedules', 'sched_c1_published'), {
+      doctorId: 'uid_center_doctor', centerId: 'center1',
+      status: 'published', isActive: false,
+    });
+    await setDoc(doc(db, 'schedules', 'sched_c1_draft'), {
+      doctorId: 'uid_center_doctor', centerId: 'center1',
+      status: 'draft', isActive: false,
+    });
+    await setDoc(doc(db, 'schedules', 'sched_c2_published'), {
+      doctorId: 'uid_center2_doctor', centerId: 'center2',
+      status: 'published', isActive: false,
     });
 
     // center_join_requests

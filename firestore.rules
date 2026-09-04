@@ -98,6 +98,28 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/medical_centers/$(centerId)/members/$(request.auth.uid)).data.get('isActive', false) == true;
     }
 
+    // Active center member of ANY role (center_admin, manager, receptionist,
+    // nurse, technician, doctor), scoped to a specific centerId.
+    //
+    // Authority is the members subcollection, not users/{uid}.centerRole, so a
+    // staff member cannot escalate by editing their own users doc. isActive is
+    // required, so a deactivated member loses access immediately.
+    //
+    // centerId null-guard prevents path-building errors on documents that carry
+    // no centerId (unaffiliated doctors, drafts); exists() guard prevents
+    // null-access when the member doc is absent.
+    //
+    // Narrower than isCenterMember(): that one ignores isActive. Use this for
+    // any NEW grant; isCenterMember() is left untouched so existing behaviour
+    // is unchanged.
+    function isActiveCenterMember(centerId) {
+      return isSignedIn()
+        && centerId is string
+        && centerId.size() > 0
+        && exists(/databases/$(database)/documents/medical_centers/$(centerId)/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/medical_centers/$(centerId)/members/$(request.auth.uid)).data.get('isActive', false) == true;
+    }
+
     // Center owner OR scoped center admin may update exactly the three
     // doctor-to-center link fields (centerId, centerJoinStatus, centerJoinApprovedAt).
     // Approve flow: centerId is being set — verifies ownership/admin of the new center.
@@ -571,8 +593,22 @@ service cloud.firestore {
     match /doctors/{uid} {
       // isCenterAdmin() allows non-doctor center managers to read doctor
       // profiles for center management (pending requests, approved doctors list).
+      //
+      // isActiveCenterMember(resource.data.centerId) covers Reception: a
+      // receptionist/nurse/technician/manager has neither doctors/{uid} nor
+      // users.centerRole == 'center_admin', so before this clause every
+      // disjunct was false and the Reception booking dialog could not load the
+      // center's doctor list at all.
+      //
+      // The grant is scoped to the doctor's OWN centerId, so a member of centre
+      // A can never read centre B's doctors. For the list query this requires
+      // the caller to filter on centerId (centerDoctorsProvider does), which is
+      // what makes it provable to the rules engine and keeps it from becoming a
+      // blanket read across all doctors.
       allow read: if isSignedIn()
-        && (request.auth.uid == uid || isAdmin() || isDoctor() || isCenterAdmin());
+        && (request.auth.uid == uid || isAdmin() || isDoctor() || isCenterAdmin()
+            || (resource != null
+                && isActiveCenterMember(resource.data.get('centerId', ''))));
 
       allow create: if isSignedIn()
         && request.auth.uid == uid;
@@ -623,7 +659,15 @@ service cloud.firestore {
         // Lab/imaging reception reads the lab's published schedule (doctorId = labId piggyback).
         || (isSignedIn()
             && resource.data.get('status', '') == 'published'
-            && isLabMember(resource.data.centerId));
+            && isLabMember(resource.data.centerId))
+        // Clinic reception reads the published shifts of doctors in its OWN
+        // centre, in order to offer bookable slots. Mirrors the lab clause
+        // above. Unpublished (draft) schedules stay private to the owning
+        // doctor: the status check is required here too, and the caller must
+        // filter on status + centerId for the list query to be provable.
+        || (isSignedIn()
+            && resource.data.get('status', '') == 'published'
+            && isActiveCenterMember(resource.data.get('centerId', '')));
 
       allow create: if isDoctor()
         && request.resource.data.doctorId == request.auth.uid
