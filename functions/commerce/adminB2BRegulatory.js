@@ -156,3 +156,87 @@ exports.adminRejectSellerRegulatoryApplication = onCall({ region: "us-central1" 
     rejectionReason: typeof rejectionReason === "string" ? rejectionReason : undefined,
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Merchant Verification (2026-09) — base identity/business verification for
+// standalone Commerce merchants.
+//
+// Lives in THIS file, and reuses its requireAdmin/callCommerce/OIDC machinery
+// verbatim, because the trust boundary is identical: mydoctor_admin ->
+// Healthcare (admin verified here, against users/{uid}.role) -> Commerce
+// (IAM-invoker-restricted to this project's runtime service account). A
+// second relay file would duplicate that boundary for no gain.
+//
+// What it is NOT is the same APPROVAL. These four endpoints move
+// organizations/{orgId}.verificationStatus — "is this a real business run by
+// a known person", which gates trading at all. The regulatory endpoints above
+// move sellerRegulatoryScopes — "may this business sell pharmaceuticals".
+// Approving one never grants the other, on either side of this relay.
+// ─────────────────────────────────────────────────────────────────────────────
+
+exports.adminListMerchantVerifications = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  return callCommerce("listPendingMerchantVerificationsForHealthcare", {
+    actorUid: request.auth.uid,
+  });
+});
+
+// Short-lived signed URL for ONE government-ID/registration document, for
+// secure review. Identity documents are never public and never directly
+// readable by any Commerce user or staff member — Commerce's storage.rules
+// denies every client read, and this is the only path to the bytes.
+exports.adminGetMerchantVerificationDocument = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  const { orgId, docType } = request.data || {};
+  if (!orgId || typeof orgId !== "string" || !docType || typeof docType !== "string") {
+    throw new HttpsError("invalid-argument", "orgId and docType are required.");
+  }
+  return callCommerce("getMerchantVerificationDocumentForHealthcare", {
+    actorUid: request.auth.uid,
+    orgId,
+    docType,
+  });
+});
+
+// Approval — the ONE place a standalone organization becomes "verified", and
+// the point at which its commercial trial starts. Commerce independently
+// re-checks document completeness and that the reviewed person is still the
+// organization's owner before granting anything; this relay never trusts the
+// admin UI's own completeness display as the real gate.
+//
+// Never grants sellerRegulatoryScopes. A verified medical supplier still
+// needs adminApproveSellerRegulatoryApplication above.
+exports.adminApproveMerchantVerification = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  const { orgId } = request.data || {};
+  if (!orgId || typeof orgId !== "string") {
+    throw new HttpsError("invalid-argument", "orgId is required.");
+  }
+  return callCommerce("approveMerchantVerificationForHealthcare", {
+    actorUid: request.auth.uid,
+    orgId,
+  });
+});
+
+// Reject (terminal for this application) or request changes (resubmittable).
+// A reason is REQUIRED for both: a merchant told to fix something must be told
+// what, and an unexplained rejection is an unactionable one.
+exports.adminReviewMerchantVerification = onCall({ region: "us-central1" }, async (request) => {
+  await requireAdmin(request);
+  const { orgId, decision, reason } = request.data || {};
+  if (!orgId || typeof orgId !== "string") {
+    throw new HttpsError("invalid-argument", "orgId is required.");
+  }
+  if (decision !== "rejected" && decision !== "changes_requested") {
+    throw new HttpsError("invalid-argument", 'decision must be "rejected" or "changes_requested".');
+  }
+  if (typeof reason !== "string" || !reason.trim()) {
+    throw new HttpsError("invalid-argument", "A reason is required.");
+  }
+  return callCommerce("reviewMerchantVerificationForHealthcare", {
+    actorUid: request.auth.uid,
+    orgId,
+    decision,
+    reason: reason.trim(),
+  });
+});

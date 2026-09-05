@@ -2435,11 +2435,23 @@ const {
   adminGetSellerRegulatoryDocument,
   adminApproveSellerRegulatoryApplication,
   adminRejectSellerRegulatoryApplication,
+  // Merchant Verification (2026-09) — base identity/business verification.
+  // Same relay file, same admin gate and OIDC pattern; a DIFFERENT approval
+  // from the regulatory ones above (verificationStatus, never
+  // sellerRegulatoryScopes). See adminB2BRegulatory.js's own section header.
+  adminListMerchantVerifications,
+  adminGetMerchantVerificationDocument,
+  adminApproveMerchantVerification,
+  adminReviewMerchantVerification,
 } = require("./commerce/adminB2BRegulatory");
 exports.adminListSellerRegulatoryApplications = adminListSellerRegulatoryApplications;
 exports.adminGetSellerRegulatoryDocument = adminGetSellerRegulatoryDocument;
 exports.adminApproveSellerRegulatoryApplication = adminApproveSellerRegulatoryApplication;
 exports.adminRejectSellerRegulatoryApplication = adminRejectSellerRegulatoryApplication;
+exports.adminListMerchantVerifications = adminListMerchantVerifications;
+exports.adminGetMerchantVerificationDocument = adminGetMerchantVerificationDocument;
+exports.adminApproveMerchantVerification = adminApproveMerchantVerification;
+exports.adminReviewMerchantVerification = adminReviewMerchantVerification;
 
 // ─── TrustyDr Commerce Bridge — B2B Marketplace Channels & Buyer Entitlement (Admin Control) ───
 // Phase 4B.5, 2026-08-18. Admin-only grant/revoke of organizations/{orgId}.
